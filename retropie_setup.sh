@@ -30,9 +30,6 @@
 #  Raspberry Pi is a trademark of the Raspberry Pi Foundation.
 # 
 
-__BINARIESNAME="RetroPieSetupBinaries_061112.tar.bz2"
-__THEMESNAME="RetroPieSetupThemes_241112.tar.bz2"
-
 __ERRMSGS=""
 __INFMSGS=""
 __doReboot=0
@@ -50,7 +47,7 @@ function ask()
 
 function addLineToFile()
 {
-	if [[ -f "$2" ]]; then
+    if [[ -f "$2" ]]; then
         cp "$2" ./temp
         sudo mv "$2" "$2.old"
     fi
@@ -114,6 +111,19 @@ function disableKeyValueShort()
         # replace existing key-value pair
         toreplace=`egrep -i "#? *$1=""?[+|-]?[0-9]*[a-z]*"""? $3`
         sed $3 -i -e "s|$toreplace|# $1=""$2""|g"
+    fi     
+}
+
+# ensures pair of key ($1)-value ($2) in file $3
+function ensureKeyValueBootconfig()
+{
+    if [[ -z $(egrep -i "#? *$1=[+|-]?[0-9]*[a-z]*" $3) ]]; then
+        # add key-value pair
+        echo "$1=$2" >> $3
+    else
+        # replace existing key-value pair
+        toreplace=`egrep -i "#? *$1=[+|-]?[0-9]*[a-z]*" $3`
+        sed $3 -i -e "s|$toreplace|$1=$2|g"
     fi     
 }
 
@@ -198,12 +208,14 @@ function run_rpiupdate()
 # update APT repositories
 function update_apt() 
 {
+    printMsg "Updating APT-GET database"
     apt-get -y update
 }
 
 # upgrade APT packages
 function upgrade_apt()
 {
+    printMsg "Performing APT-GET upgrade"
     apt-get -y upgrade
     chmod 777 /dev/fb0
     ensureKeyValueShort "gpu_mem" "128" "/boot/config.txt"
@@ -268,10 +280,63 @@ function installAPTPackages()
                         libboost-filesystem-dev libboost-system-dev zip python-imaging \
                         libfreeimage-dev libfreetype6-dev libxml2 libxml2-dev libbz2-dev \
                         libaudiofile-dev libsdl-sound1.2-dev libsdl-mixer1.2-dev \
-                        joystick
+                        joystick fbi gcc-4.7 automake1.4 libcurl4-openssl-dev  libzip-dev \
+                        build-essential nasm libgl1-mesa-dev libglu1-mesa-dev libsdl1.2-dev \
+                        libvorbis-dev libpng12-dev libvpx-dev freepats subversion \
+                        libboost-serialization-dev libboost-thread-dev libsdl-ttf2.0-dev
 
     # remove PulseAudio since this is slowing down the whole system significantly
     apt-get remove -y pulseaudio
+    apt-get -y autoremove
+}
+
+# start SNESDev on boot and configure RetroArch input settings
+function enableSplashscreenAtStart()
+{
+    clear
+    printMsg "Enabling custom splashscreen on boot."
+
+    chmod +x "./supplementary/asplashscreen/asplashscreen"
+    cp "./supplementary/asplashscreen/asplashscreen" /etc/init.d/
+
+    cp "./supplementary/asplashscreen/splashscreen.png" /etc/
+
+    # This command installs the init.d script so it automatically starts on boot
+    insserv /etc/init.d/asplashscreen
+    # not-so-elegant hack for later re-enabling the splashscreen
+    update-rc.d asplashscreen enable
+
+}
+
+# disable start SNESDev on boot and remove RetroArch input settings
+function disableSplashscreenAtStart()
+{
+    clear
+    printMsg "Disabling custom splashscreen on boot."
+
+    update-rc.d asplashscreen disable
+
+}
+
+# Show dialogue for enabling/disabling SNESDev on boot
+function enableDisableSplashscreen()
+{
+    cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --menu "Choose the desired boot behaviour." 22 86 16)
+    options=(1 "Disable custom splashscreen on boot."
+             2 "Enable custom splashscreen on boot")
+    choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
+    if [ "$choices" != "" ]; then
+        case $choices in
+            1) disableSplashscreenAtStart
+               dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Disabled custom splashscreen on boot." 22 76    
+                            ;;
+            2) enableSplashscreenAtStart
+               dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Enabled custom splashscreen on boot." 22 76    
+                            ;;
+        esac
+    else
+        break
+    fi    
 }
 
 # prepare folder structure for emulator, cores, front end, and roms
@@ -279,32 +344,40 @@ function prepareFolders()
 {
     printMsg "Creating folder structure for emulator, front end, cores, and roms"
 
-    pathlist[0]="$rootdir/roms"
-    pathlist[1]="$rootdir/roms/atari2600"
-    pathlist[2]="$rootdir/roms/doom"
-    pathlist[3]="$rootdir/roms/gamegear"
-    pathlist[4]="$rootdir/roms/gba"
-    pathlist[5]="$rootdir/roms/gbc"
-    pathlist[6]="$rootdir/roms/mame"
-    pathlist[7]="$rootdir/roms/mastersystem"
-    pathlist[8]="$rootdir/roms/megadrive"
-    pathlist[9]="$rootdir/roms/nes"
-    pathlist[10]="$rootdir/roms/pcengine"
-    pathlist[11]="$rootdir/roms/psx"
-    pathlist[12]="$rootdir/roms/snes"
-    pathlist[13]="$rootdir/roms/zxspectrum"
-    pathlist[14]="$rootdir/emulatorcores"
-    pathlist[15]="$rootdir/roms/amiga"
-    pathlist[16]="$rootdir/roms/neogeo"
-    pathlist[17]="$rootdir/roms/scummvm"
-    pathlist[18]="$rootdir/roms/zmachine"
-    pathlist[19]="$rootdir/emulators"
-    pathlist[20]="$rootdir/supplementary"
+    pathlist=()
+    pathlist+=("$rootdir/roms")
+    pathlist+=("$rootdir/roms/atari2600")
+    pathlist+=("$rootdir/roms/c64")
+    pathlist+=("$rootdir/roms/cavestory")
+    pathlist+=("$rootdir/roms/doom")
+    pathlist+=("$rootdir/roms/duke3d/")
+    pathlist+=("$rootdir/roms/gamegear")
+    pathlist+=("$rootdir/roms/gb")
+    pathlist+=("$rootdir/roms/gba")
+    pathlist+=("$rootdir/roms/gbc")
+    pathlist+=("$rootdir/roms/intellivision")
+    pathlist+=("$rootdir/roms/mame")
+    pathlist+=("$rootdir/roms/mastersystem")
+    pathlist+=("$rootdir/roms/megadrive")
+    pathlist+=("$rootdir/roms/nes")
+    pathlist+=("$rootdir/roms/pcengine")
+    pathlist+=("$rootdir/roms/psx")
+    pathlist+=("$rootdir/roms/snes")
+    pathlist+=("$rootdir/roms/zxspectrum")
+    pathlist+=("$rootdir/roms/fba")
+    pathlist+=("$rootdir/roms/amiga")
+    pathlist+=("$rootdir/roms/neogeo")
+    pathlist+=("$rootdir/roms/scummvm")
+    pathlist+=("$rootdir/roms/x86")
+    pathlist+=("$rootdir/roms/zmachine")
+    pathlist+=("$rootdir/emulatorcores")
+    pathlist+=("$rootdir/emulators")
+    pathlist+=("$rootdir/supplementary")
 
     for elem in "${pathlist[@]}"
     do
         if [[ ! -d $elem ]]; then
-            mkdir $elem
+            mkdir -p $elem
             chown $user $elem
             chgrp $user $elem
         fi
@@ -314,14 +387,65 @@ function prepareFolders()
 # settings for RetroArch
 function configureRetroArch()
 {
-    printMsg "Configuring RetroArch in /etc/retroarch.cfg"
-    ensureKeyValue "system_directory" "$rootdir/emulatorcores/" "/etc/retroarch.cfg"
-    ensureKeyValue "video_driver" "\"gl\"" "/etc/retroarch.cfg"
+    printMsg "Configuring RetroArch"
+
+    if [[ ! -f "$rootdir/configs/all/retroarch.cfg" ]]; then
+        mkdir -p "$rootdir/configs/all/"
+        mkdir -p "$rootdir/configs/atari2600/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/atari2600/retroarch.cfg
+        mkdir -p "$rootdir/configs/cavestory/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/cavestory/retroarch.cfg
+        mkdir -p "$rootdir/configs/doom/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/doom/retroarch.cfg
+        mkdir -p "$rootdir/configs/gb/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/gb/retroarch.cfg
+        mkdir -p "$rootdir/configs/gbc/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/gbc/retroarch.cfg
+        mkdir -p "$rootdir/configs/gamegear/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/gamegear/retroarch.cfg
+        mkdir -p "$rootdir/configs/mame/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/mame/retroarch.cfg
+        mkdir -p "$rootdir/configs/mastersystem/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/mastersystem/retroarch.cfg
+        mkdir -p "$rootdir/configs/nes/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/nes/retroarch.cfg
+        mkdir -p "$rootdir/configs/pcengine/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/pcengine/retroarch.cfg
+        mkdir -p "$rootdir/configs/psx/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/psx/retroarch.cfg
+        mkdir -p "$rootdir/configs/snes/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/snes/retroarch.cfg
+        mkdir -p "$rootdir/configs/fba/"
+        echo -e "# All settings made here will override the global settings for the current emulator core\n" >> $rootdir/configs/fba/retroarch.cfg
+        cp /etc/retroarch.cfg "$rootdir/configs/all/"
+    fi
+
+    ensureKeyValue "system_directory" "$rootdir/emulatorcores/" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "video_aspect_ratio" "1.33" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "video_smooth" "false" "$rootdir/configs/all/retroarch.cfg"
+
+    # enable hotkey ("select" button)
+    ensureKeyValue "input_exit_emulator" "escape" "$rootdir/configs/all/retroarch.cfg"
 
     # enable and configure rewind feature
-    ensureKeyValue "rewind_enable" "true" "/etc/retroarch.cfg"
-    ensureKeyValue "rewind_buffer_size" "10" "/etc/retroarch.cfg"
-    ensureKeyValue "rewind_granularity" "2" "/etc/retroarch.cfg"
+    ensureKeyValue "rewind_enable" "true" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "rewind_buffer_size" "10" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "rewind_granularity" "2" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_rewind" "r" "$rootdir/configs/all/retroarch.cfg"
+
+    # configure keyboard mappings
+    ensureKeyValue "input_player1_a" "x" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_b" "z" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_y" "a" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_x" "s" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_start" "enter" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_select" "rshift" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_l" "q" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_r" "w" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_left" "left" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_right" "right" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_up" "up" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "input_player1_down" "down" "$rootdir/configs/all/retroarch.cfg"
 }
 
 # install RetroArch emulator
@@ -329,13 +453,117 @@ function install_retroarch()
 {
     printMsg "Installing RetroArch emulator"
     gitPullOrClone "$rootdir/emulators/RetroArch" git://github.com/Themaister/RetroArch.git
-    ./configure --disable-libpng
+    ./configure
     make
     sudo make install
     if [[ ! -f "/usr/local/bin/retroarch" ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile and install RetroArch."
     fi  
     popd
+}
+
+function configure_advmame()
+{
+    $rootdir/emulators/advancemame-0.94.0/installdir/bin/advmame
+    mv /root/.advance/ /home/$user/
+    echo 'device_video_clock 5 - 50 / 15.62 / 50 ; 5 - 50 / 15.73 / 60' >> /home/$user/.advance/advmame.rc
+    chmod -R a+rwX /home/$user/.advance/
+    chown -R $user /home/$user/.advance/
+}
+
+# install AdvanceMAME emulator
+install_advmame()
+{
+    printMsg "Installing AdvMAME emulator"
+
+    wget -O advmame.tar.gz http://downloads.sourceforge.net/project/advancemame/advancemame/0.94.0/advancemame-0.94.0.tar.gz
+
+    apt-get -y install libsdl1.2-dev gcc-4.7
+    export CC=gcc-4.7
+    export GCC=g++-4.7
+
+    tar xzvf advmame.tar.gz -C "$rootdir/emulators/"
+    pushd "$rootdir/emulators/advancemame-0.94.0"
+    sed 's/MAP_SHARED | MAP_FIXED,/MAP_SHARED,/' <advance/linux/vfb.c >advance/linux/temp.c
+    mv advance/linux/temp.c advance/linux/vfb.c
+    sed 's/misc_quiet\", 0/misc_quiet\", 1/' <advance/osd/global.c >advance/osd/temp.c
+    mv advance/osd/temp.c advance/osd/global.c 
+sed '
+/#include <string>/ i\
+#include <stdlib.h>
+' <advance/d2/d2.cc >advance/d2/temp.cc
+    mv advance/d2/temp.cc advance/d2/d2.cc
+    ./configure --prefix="$rootdir/emulators/advancemame-0.94.0/installdir"
+    sed 's/LDFLAGS=-s/LDFLAGS=-s -lm -Wl,--no-as-needed/' <Makefile >Makefile.temp
+    mv Makefile.temp Makefile
+    make
+    make install
+    popd
+
+    configure_advmame
+}
+
+function ensureEntryInSMBConf()
+{
+    comp=`cat /etc/samba/smb.conf | grep "\[$1\]"`
+    if [ "$comp" == "[$1]" ]; then
+      echo "$1 already contained in /etc/samba/smb.conf."
+    else
+    chmod 666 /etc/samba/smb.conf
+    tee -a /etc/samba/smb.conf <<HDHD
+[$1]
+comment = $1
+path = $rootdir/roms/$2
+writeable = yes
+guest ok = yes
+create mask = 0777
+directory mask = 0777
+read only = no
+browseable = yes
+force user = $user
+public = yes
+HDHD
+    fi
+    chmod 644 /etc/samba/smb.conf
+}
+
+# install and configure SAMBA shares for each ROM directory of the emulators
+configureSAMBA()
+{
+    clear
+    printMsg "Installing and configuring SAMBA shares."
+    apt-get update
+    apt-get install -y samba samba-common-bin
+
+    ensureEntryInSMBConf "AMIGA" "amiga"
+    ensureEntryInSMBConf "APPLE2" "apple2"
+    ensureEntryInSMBConf "ATARI2600" "atari2600"
+    ensureEntryInSMBConf "C64" "c64"
+    ensureEntryInSMBConf "DOOM" "doom"
+    ensureEntryInSMBConf "DUKE3D" "duke3d"
+    ensureEntryInSMBConf "GAMEGEAR" "gamegear"
+    ensureEntryInSMBConf "FBA" "fba"
+    ensureEntryInSMBConf "GB" "gb"
+    ensureEntryInSMBConf "GBA" "gba"
+    ensureEntryInSMBConf "GBC" "gbc"
+    ensureEntryInSMBConf "INTELLIVISION" "intellivision"
+    ensureEntryInSMBConf "MAME" "mame"
+    ensureEntryInSMBConf "MASTERSYSTEM" "mastersystem"
+    ensureEntryInSMBConf "MEGADRIVE" "megadrive"
+    ensureEntryInSMBConf "NEOGEO" "neogeo"
+    ensureEntryInSMBConf "NES" "nes"
+    ensureEntryInSMBConf "X86" "x86"
+    ensureEntryInSMBConf "PCENGINE" "pcengine"
+    ensureEntryInSMBConf "PSX" "psx"
+    ensureEntryInSMBConf "SNES" "snes"
+    ensureEntryInSMBConf "SCUMMVM" "scummvm"
+    ensureEntryInSMBConf "ZMACHINE" "zmachine"
+    ensureEntryInSMBConf "ZXSPECTRUM" "zxspectrum"
+
+    /etc/init.d/samba restart
+
+    dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "The SAMBA shares can be accessed with a guest account" 22 76    
+
 }
 
 # install Amiga emulator
@@ -348,6 +576,10 @@ install_amiga()
     wget http://darcelf.free.fr/uae4all-src-rc3.chip.tar.bz2
     tar -jxvf uae4all-src-rc3.chip.tar.bz2 -C "$rootdir/emulators/"
     pushd "$rootdir/emulators/uae4all"
+    if [[ ! -f /opt/vc/include/interface/vmcs_host/vchost_config.h ]]; then
+        touch /opt/vc/include/interface/vmcs_host/vchost_config.h
+    fi
+    touch /opt/vc/include/interface/vmcs_host/vchost_config.h
     make
     chown -R $user "$rootdir/emulators/uae4all"
     chgrp -R pi "$rootdir/emulators/uae4all"
@@ -369,10 +601,71 @@ function install_atari2600()
     # remove msse and msse2 flags from Makefile, just a hack here to make it compile on the Raspberry
     sed 's|-msse2 ||g;s|-msse ||g' Makefile >> Makefile.rpi
     make -f Makefile.rpi
-    if [[ ! -f "$rootdir/emulatorcores/stella-libretro/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/stella-libretro/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile Atari 2600 core."
     fi  
     popd    
+}
+
+# install C64 ROMs
+function install_c64roms()
+{
+    printMsg "Retrieving Commodore 64 ROMs"
+    wget http://www.zimmers.net/anonftp/pub/cbm/crossplatform/emulators/VICE/old/vice-1.5-roms.tar.gz
+    tar -xvzf vice-1.5-roms.tar.gz
+    mkdir -p "$rootdir/emulators/vice-2.3.dfsg/installdir/lib/vice/"
+    cp -a vice-1.5-roms/data/* "$rootdir/emulators/vice-2.3.dfsg/installdir/lib/vice/"
+    rm -rf vice-1.5-roms
+    rm -rf vice-1.5-roms.tar.gz    
+}
+
+# Install VICE C64 Emulator
+function install_viceC64()
+{
+    printMsg "Install VICE Commodore 64 core"
+    if [[ -d "$rootdir/emulators/vice-2.3.dsfg" ]]; then
+        rm -rf "$rootdir/emulators/vice-2.3.dsfg"
+    fi
+    if dpkg-query -Wf'${db:Status-abbrev}' vice 2>/dev/null | grep -q '^i'; then
+        printf 'Package vice is already installed - removing package\n' "${1}"
+        apt-get remove -y vice
+    fi
+    printMsg "Installing vice"
+    pushd "$rootdir/emulators"
+    echo 'deb-src http://mirrordirector.raspbian.org/raspbian/ wheezy main contrib non-free rpi' >> /etc/apt/sources.list
+    apt-get update
+    apt-get build-dep -y vice
+    apt-get install -y libxaw7-dev automake checkinstall
+    apt-get source vice
+    cd vice-2.3.dfsg
+    ./configure --prefix="$rootdir/emulators/vice-2.3.dfsg/installdir" --enable-sdlui --with-sdlsound
+    make    
+    make install
+    popd
+    install_c64roms    
+}
+
+# configure NXEngine / Cave Story core
+function configure_cavestory()
+{
+    if [[ ! -d $rootdir/roms/cavestory ]]; then
+        mkdir -p $rootdir/roms/cavestory
+    fi
+    touch $rootdir/roms/cavestory/Start.txt    
+}
+
+# install NXEngine / Cave Story core
+function install_cavestory()
+{
+    printMsg "Installing NXEngine / Cave Story"
+    gitPullOrClone "$rootdir/emulatorcores/nxengine-libretro" git://github.com/libretro/nxengine-libretro.git
+    make
+    if [[ -z `find $rootdir/emulatorcores/nxengine-libretro/ -name "*libretro*.so"` ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile NXEngine / Cave Story core."
+    else
+        configure_cavestory
+    fi  
+    popd
 }
 
 # configure DGEN
@@ -380,20 +673,31 @@ function configureDGEN()
 {
     chmod 777 /dev/fb0
 
-    mkdir /home/$user/.dgen/
-    chown -R $user /home/$user/.dgen/
-    chgrp -R $user /home/$user/.dgen/
-    cp sample.dgenrc /home/$user/.dgen/dgenrc 
-    ensureKeyValue "joypad1_b0" "A" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad1_b1" "B" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad1_b3" "C" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad1_b6" "MODE" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad1_b7" "START" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad2_b0" "A" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad2_b1" "B" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad2_b3" "C" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad2_b6" "MODE" /home/$user/.dgen/dgenrc
-    ensureKeyValue "joypad2_b7" "START" /home/$user/.dgen/dgenrc    
+    if [[ ! -f "$rootdir/configs/all/dgenrc" ]]; then
+        mkdir -p "$rootdir/configs/all/"
+        cp $rootdir/emulators/dgen-sdl/sample.dgenrc $rootdir/configs/all/dgenrc 
+    fi
+
+    chown -R $user $rootdir/configs/all/
+    chgrp -R $user $rootdir/configs/all/
+
+    ensureKeyValue "joy_pad1_a" "joystick0-button0" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_b" "joystick0-button1" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_c" "joystick0-button2" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_x" "joystick0-button3" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_y" "joystick0-button4" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_z" "joystick0-button5" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_mode" "joystick0-button6" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad1_start" "joystick0-button7" $rootdir/configs/all/dgenrc
+
+    ensureKeyValue "joy_pad2_a" "joystick1-button0" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_b" "joystick1-button1" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_c" "joystick1-button2" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_x" "joystick1-button3" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_y" "joystick1-button4" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_z" "joystick1-button5" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_mode" "joystick1-button6" $rootdir/configs/all/dgenrc
+    ensureKeyValue "joy_pad2_start" "joystick1-button7" $rootdir/configs/all/dgenrc
 }
 
 # install DGEN (Megadrive/Genesis emulator)
@@ -403,22 +707,20 @@ function install_dgen()
     if [[ -d "$rootdir/emulators/dgen" ]]; then
         rm -rf "$rootdir/emulators/dgen"
     fi   
-    wget http://downloads.sourceforge.net/project/dgen/dgen/1.30/dgen-sdl-1.30.tar.gz
-    tar xvfz dgen-sdl-1.30.tar.gz -C "$rootdir/emulators/"
-    pushd "$rootdir/emulators/dgen-sdl-1.30"
+    wget http://downloads.sourceforge.net/project/dgen/dgen/1.32/dgen-sdl-1.32.tar.gz
+    tar xvfz dgen-sdl-1.32.tar.gz -C "$rootdir/emulators/"
+    mv "$rootdir/emulators/dgen-sdl-1.32" "$rootdir/emulators/dgen-sdl"
+    pushd "$rootdir/emulators/dgen-sdl"
     mkdir "installdir" # only used for creating the binaries archive
-    ./configure --disable-hqx --disable-opengl
+    ./configure --disable-opengl
     make
-    make install DESTDIR=$rootdir/emulators/dgen-sdl-1.30/installdir
+    make install DESTDIR=$rootdir/emulators/dgen-sdl/installdir
     make install
-    if [[ ! -f "$rootdir/emulators/dgen-sdl-1.30/dgen" ]]; then
+    if [[ ! -f "$rootdir/emulators/dgen-sdl/dgen" ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile DGEN emulator."
     fi  
     popd
-    rm dgen-sdl-1.30.tar.gz
-
-    configureDGEN
-
+    rm dgen-sdl-1.32.tar.gz
 }
 
 # install Doom WADs emulator core
@@ -429,7 +731,7 @@ function install_doom()
     make
     mkdir -p $rootdir/roms/doom/
     cp $rootdir/emulatorcores/libretro-prboom/prboom.wad $rootdir/roms/doom/
-    if [[ ! -f "$rootdir/emulatorcores/libretro-prboom/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/libretro-prboom/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile Doom core."
     fi  
     popd
@@ -438,39 +740,61 @@ function install_doom()
 #install eDuke32
 function install_eduke32()
 {
-	  printMsg "Installing eDuke32"
+    printMsg "Installing eDuke32"
     if [[ -d "$rootdir/emulators/eduke32" ]]; then
         rm -rf "$rootdir/emulators/eduke32"
     fi
     mkdir -p $rootdir/emulators/eduke32
-    cd "$rootdir/emulators/eduke32"
     pushd "$rootdir/emulators/eduke32"
-		printMsg "Downloading eDuke core"
-		wget http://repo.berryboot.com/eduke32_2.0.0rpi+svn2789_armhf.deb		
-		printMsg "Downloading eDuke32 Shareware files"
-		wget http://apt.duke4.net/pool/main/d/duke3d-shareware/duke3d-shareware_1.3d-23_all.deb	
-		if [[ ! -f "$rootdir/emulators/eduke32/eduke32_2.0.0rpi+svn2789_armhf.deb" ]]; then
-        __ERRMSGS="$__ERRMSGS Could not successfully compile eDuke32 core."
+    printMsg "Downloading eDuke core"
+    wget http://repo.berryboot.com/eduke32_2.0.0rpi+svn2789_armhf.deb       
+    printMsg "Downloading eDuke32 Shareware files"
+    wget http://apt.duke4.net/pool/main/d/duke3d-shareware/duke3d-shareware_1.3d-23_all.deb 
+    if [[ ! -f "$rootdir/emulators/eduke32/eduke32_2.0.0rpi+svn2789_armhf.deb" ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully install eDuke32 core."
+    else
+        printMsg "Installing eDuke32"
+        sudo dpkg -i *duke*.deb
+        cp /usr/share/games/eduke32/DUKE.RTS $rootdir/roms/duke3d/
+        cp /usr/share/games/eduke32/duke3d.grp $rootdir/roms/duke3d/
     fi
-		printMsg "Installing eDuke32"
-		sudo dpkg -i *duke*.deb
-		mkdir -p $rootdir/roms/eduke32/
-		cp /usr/share/games/eduke32/DUKE.RTS $rootdir/roms/eduke32/
-		cp /usr/share/games/eduke32/duke3d.grp $rootdir/roms/eduke32/
-		popd
-		rm -rf "$rootdir/emulators/eduke32"
+    popd
+    rm -rf "$rootdir/emulators/eduke32"
 }
 
-# install Game Boy Advance emulator core
+
+# install Game Boy Advance emulator gpSP
 function install_gba()
 {
-    printMsg "Installing Game Boy Advance core"
-    gitPullOrClone "$rootdir/emulatorcores/vba-next" git://github.com/libretro/vba-next.git
-    make -f Makefile.libretro
-    if [[ ! -f "$rootdir/emulatorcores/vba-next/libretro.so" ]]; then
-        __ERRMSGS="$__ERRMSGS Could not successfully compile Game Boy Advance core."
-    fi      
-    popd    
+    printMsg "Installing Game Boy Advance emulator gpSP"
+    gitPullOrClone "$rootdir/emulators/gpsp" git://github.com/DPRCZ/gpsp.git
+    cd raspberrypi
+
+    #if we are on the 256mb model, we will never have enough RAM to compile gpSP with compiler optimization
+    #if this is the case, use sed to remove the -O3 in the Makefile (line 20, "CFLAGS     += -O3 -mfpu=vfp")
+    local RPiRev=`grep 'Revision' /proc/cpuinfo | cut -d " " -f 2`
+    if [ $RPiRev == "00d" ] || [ $RPiRev == "000e" ] || [ $RPiRev == "000f" ]; then
+    	#RAM = 512mb, we're good
+    	echo "512mb Pi, no de-optimization fix needed."
+    else
+	#RAM = 256mb, need to compile unoptimized
+    	echo "Stripping -O[1..3] from gpSP Makefile to compile unoptimized on 256mb Pi..."
+    	sed -i 's/-O[1..3]//g' Makefile
+    fi
+
+    #gpSP is missing an include in the Makefile
+    if [ grep '-I/opt/vc/include/interface/vmcs_host/linux' Makefile ]; then
+	   echo "Skipping adding missing include to gpSP Makefile."
+    else
+	   echo "Adding -I/opt/vc/include/interface/vmcs_host/linux to Makefile"
+	   sed -i '23iCFLAGS     += -I/opt/vc/include/interface/vmcs_host/linux' Makefile
+    fi
+
+    make
+    if [[ -z `find $rootdir/emulators/gpsp/ -name "gpsp"` ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile Game Boy Advance emulator."
+    fi
+    popd
 }
 
 # install Game Boy Color emulator core
@@ -479,7 +803,7 @@ function install_gbc()
     printMsg "Installing Game Boy Color core"
     gitPullOrClone "$rootdir/emulatorcores/gambatte-libretro" git://github.com/libretro/gambatte-libretro.git
     make -C libgambatte -f Makefile.libretro
-    if [[ ! -f "$rootdir/emulatorcores/gambatte-libretro/libgambatte/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/gambatte-libretro/libgambatte/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile Game Boy Color core."
     fi      
     popd
@@ -491,10 +815,143 @@ function install_mame()
     printMsg "Installing MAME core"
     gitPullOrClone "$rootdir/emulatorcores/imame4all-libretro" git://github.com/libretro/imame4all-libretro.git
     make -f makefile.libretro ARM=1
-    if [[ ! -f "$rootdir/emulatorcores/imame4all-libretro/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/imame4all-libretro/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile MAME core."
     fi      
     popd
+}
+
+# install FBA emulator core
+function install_fba()
+{
+    printMsg "Installing FBA core"
+    gitPullOrClone "$rootdir/emulatorcores/fba-libretro" git://github.com/libretro/fba-libretro.git
+    apt-get install -y --force-yes cpp-4.5 gcc-4.5 g++-4.5
+    (
+        cd $rootdir/emulatorcores/fba-libretro/svn-current/trunk/
+        CC=gcc-4.5 CXX=g++-4.5 make -f makefile.libretro
+    )
+    mv svn-current/trunk/*libretro*.so $rootdir/emulatorcores/fba-libretro/
+    if [[ -z `find $rootdir/emulatorcores/fba-libretro/ -name "*libretro*.so"` ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile FBA core."
+    fi
+    popd
+}
+
+# configure NeoGeo
+function configureNeogeo()
+{
+    mkdir /home/$user/.gngeo/
+    cp $rootdir/emulators/gngeo-0.7/sample_gngeorc /home/$user/.gngeo/gngeorc
+    chown -R $user /home/$user/.gngeo/
+    chgrp -R $user /home/$user/.gngeo/
+
+    sed -i -e "s/effect none/effect scale2x/g" /home/$user/.gngeo/gngeorc
+    sed -i -e "s/fullscreen false/fullscreen true/g" /home/$user/.gngeo/gngeorc
+    sed -i -e "s|rompath /usr/games/lib/xmame|rompath $rootdir/RetroPie/emulators/gngeo-0.7/installdir/share/gngeo/romrc.d|g" /home/$user/.gngeo/gngeorc
+
+    chmod 777 /dev/fb0
+
+    mkdir "$rootdir/emulators/gngeo-0.7/neogeo-bios"
+    __INFMSGS="$__INFMSGS You need to copy NeoGeo BIOS files to the folder '$rootdir/emulators/gngeo-0.7/neogeo-bios/'."    
+}
+
+# configure AdvanceMenu
+function configure_advancemenu()
+{
+    printMsg "Configuring AdvanceMenu"
+
+    mkdir -p "/home/$user/.advance/"
+    cp "./supplementary/advmenu.rc" "/home/$user/.advance/"
+
+    cat >> "/home/$user/.advance/advmenu.rc" << _EOF_
+
+emulator "Atari 2600" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/stella-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/atari2600/retroarch.cfg %p"
+emulator_roms "Atari 2600" "$rootdir/roms/atari2600"
+
+emulator "Doom" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/libretro-prboom/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/doom/retroarch.cfg %p"
+emulator_roms "Doom" "$rootdir/roms/doom"
+
+emulator "eDuke32" generic "/usr/local/bin/eduke32" "%p"
+
+emulator "Gameboy Advance" generic "$rootdir/emulators/gpsp/gpsp" "%p"
+emulator_roms "Gameboy Advance" "$rootdir/roms/gba"
+
+emulator "Gameboy Color" generic "-L `find $rootdir/emulatorcores/gambatte-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/gbc/retroarch.cfg %p"
+emulator_roms "Gameboy Color" "$rootdir/roms/gbc"
+
+emulator "Sega Game Gear" generic "$rootdir/emulators/osmose-0.8.1+rpi20121122/osmose" "%p -joy -tv -fs"
+emulator_roms "Sega Game Gear" "$rootdir/roms/gamegear"
+
+emulator "IntelliVision" generic "$rootdir/emulators/jzintv-1.0-beta4/bin/jzintv" "-z1 -f1 -q %p"
+emulator_roms "IntelliVision" "$rootdir/roms/intellivision"
+
+emulator "MAME" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/imame4all-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/mame/retroarch.cfg %p"
+emulator_roms "MAME" "$rootdir/roms/mame"
+
+emulator "ScummVM" generic "scummvm"
+emulator_roms "ScummVM" "$rootdir/roms/scummvm"
+
+emulator "Sega Master System" generic "$rootdir/emulators/osmose-0.8.1+rpi20121122/osmose" "%p -joy -tv -fs"
+emulator_roms "Sega Master System" "$rootdir/roms/mastersystem"
+
+emulator "Sega Mega Drive / Genesis" generic "$rootdir/emulators/dgen-sdl/dgen" "-f %p"
+emulator_roms "Sega Mega Drive / Genesis" "$rootdir/roms/megadrive"
+
+emulator "NeoGeo" generic "$rootdir/emulators/gngeo-0.7/src/gngeo" "-i $rootdir/roms/neogeo -B $rootdir/emulators/gngeo-0.7/neogeo-bios %p" 
+emulator_roms "NeoGeo" "$rootdir/roms/neogeo"
+
+emulator "Nintendo Entertainment System" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/fceu-next/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/nes/retroarch.cfg %p"
+emulator_roms "Nintendo Entertainment System" "$rootdir/roms/nes"
+
+emulator "PC Engine/TurboGrafx 16" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/mednafen-pce-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/pcengine/retroarch.cfg %p"
+emulator_roms "PC Engine/TurboGrafx 16" "$rootdir/roms/pcengine"
+
+emulator "Sony Playstation 1" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/pcsx_libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/psx/retroarch.cfg %p"
+emulator_roms "Sony Playstation 1" "$rootdir/roms/psx"
+
+emulator "Super Nintendo" generic "/usr/local/bin/retroarch" "-L `find $rootdir/emulatorcores/pocketsnes-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/snes/retroarch.cfg %p"
+emulator_roms "Super Nintendo" "$rootdir/roms/snes"
+
+_EOF_
+
+}
+
+# install AdvanceMenu
+function install_advancemenu()
+{
+    printMsg "Installing Advance Menu"
+
+    dialog --title "AdvanceMenu" --clear \
+    --yesno "It is important that you have set GPU memory to 16 MB (e.g., via the raspi-config script). Do you want to continue?" 22 76
+
+    case $? in
+      0)
+
+        wget http://downloads.sourceforge.net/project/advancemame/advancemenu/2.5.0/advancemenu-2.5.0.tar.gz
+        tar xvfz advancemenu-2.5.0.tar.gz -C "$rootdir/supplementary/"
+
+        apt-get install -y gcc-4.7
+        export CC=gcc-4.7   
+        export GCC=g++-4.7    
+
+        pushd "$rootdir/supplementary/advancemenu-2.5.0/"
+        ./configure
+        sed -i -e "s| -march=native||g" Makefile
+        make
+        make install
+        popd
+
+        configure_advancemenu
+        rm advancemenu-2.5.0.tar.gz
+
+        dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Remember to increase the GPU memory again (e.g., via the raspi-config script)!" 22 76    
+
+     ;;
+      *)
+        ;;
+    esac
+
 }
 
 # install NeoGeo emulator
@@ -505,37 +962,13 @@ function install_neogeo()
         rm -rf "$rootdir/emulators/gngeo"
     fi
 
-    # install and enable GCC-4.7
-    apt-get install -y gcc-4.7
-    export CC=gcc-4.7
-    export GCC=g++-4.7
-
-    # install zlib
-    wget http://zlib.net/zlib-1.2.7.tar.gz    
-    tar xvfz zlib-1.2.7.tar.gz -C $rootdir/supplementary/
-    pushd $rootdir/supplementary/zlib-1.2.7
-    ./configure 
-    make
-    make install
-    popd
-    rm zlib-1.2.7.tar.gz 
-
     # GnGeo
     wget http://gngeo.googlecode.com/files/gngeo-0.7.tar.gz
     tar xvfz gngeo-0.7.tar.gz -C $rootdir/emulators/
     pushd "$rootdir/emulators/gngeo-0.7"
-    ./configure --build=i386 --host=arm-linux --target=arm-linux --disable-i386asm --enable-cyclone --enable-drz80
+    ./configure --host=arm-linux --target=arm-linux --disable-i386asm --prefix="$rootdir/emulators/gngeo-0.7/installdir"
     make
     make install
-
-    # configure
-    mkdir /home/$user/.gngeo/
-    cp sample_gngeorc /home/$user/.gngeo/gngeorc
-    chown -R $user /home/$user/.gngeo/
-    chgrp -R $user /home/$user/.gngeo/
-
-    sed -i -e "s/effect none/effect scale2x/g" /home/$user/.gngeo/gngeorc
-    sed -i -e "s/fullscreen false/fullscreen true/g" /home/$user/.gngeo/gngeorc
 
     if [[ ! -f "$rootdir/emulators/gngeo-0.7/src/gngeo" ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile NeoGeo emulator."
@@ -543,10 +976,6 @@ function install_neogeo()
     popd
     rm gngeo-0.7.tar.gz
 
-    chmod 777 /dev/fb0
-
-    mkdir "$rootdir/emulators/gngeo-0.7/neogeo-bios"
-    __INFMSGS="$__INFMSGS You need to copy NeoGeo BIOS files to the folder '$rootdir/emulators/gngeo-0.7/neogeo-bios/'."
 }
 
 # install NES emulator core
@@ -554,34 +983,105 @@ function install_nes()
 {
     printMsg "Installing NES core"
     gitPullOrClone "$rootdir/emulatorcores/fceu-next" git://github.com/libretro/fceu-next.git
-    make -f Makefile.libretro-fceumm
-    if [[ ! -f "$rootdir/emulatorcores/fceu-next/libretro.so" ]]; then
+    pushd fceumm-code
+    make -f Makefile.libretro
+    popd
+    if [[ -z `find $rootdir/emulatorcores/fceu-next/fceumm-code/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile NES core."
     fi      
     popd
 }
 
-# install Sega Mega Drive/Mastersystem/Game Gear emulator core
+# install Sega Mega Drive/Mastersystem/Game Gear emulator OsmOse
 function install_megadrive()
 {
-    printMsg "Installing Mega Drive/Mastersystem/Game Gear core"
-    gitPullOrClone "$rootdir/emulatorcores/Genesis-Plus-GX" git://github.com/libretro/Genesis-Plus-GX.git
-    make -f Makefile.libretro 
-    sed /etc/retroarch.cfg -i -e "s|# system_directory =|system_directory = $rootdir/emulatorcores/|g"
-    if [[ ! -f "$rootdir/emulatorcores/Genesis-Plus-GX/libretro.so" ]]; then
-        __ERRMSGS="$__ERRMSGS Could not successfully compile Genesis core."
+    printMsg "Installing Mega Drive/Mastersystem/Game Gear emulator OsmMose"
+
+    wget https://dl.dropbox.com/s/z6l69wge8q1xq7r/osmose-0.8.1%2Brpi20121122.tar.bz2?dl=1 -O osmose.tar.bz2
+    tar -jxvf osmose.tar.bz2 -C "$rootdir/emulators/"
+    pushd "$rootdir/emulators/osmose-0.8.1+rpi20121122/"
+    make clean
+    make
+    if [[ ! -f "$rootdir/emulators/osmose-0.8.1+rpi20121122/osmose" ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile OsmMose."
     fi      
     popd
+    rm osmose.tar.bz2
 }
 
-# install PC Engine core
-function install_mednafen_pce()
+# install Intellivision Emulator jzintv
+function install_intellivision()
 {
-    printMsg "Installing Mednafen PC Engine core"
-    gitPullOrClone "$rootdir/emulatorcores/mednafen-pce-libretro" git://github.com/libretro/mednafen-pce-libretro.git
+    printMsg "Installing Intellivision emulator jzintv"
+    wget http://spatula-city.org/~im14u2c/intv/dl/jzintv-1.0-beta4-src.zip -O jzintv.zip
+    unzip -n jzintv.zip -d "$rootdir/emulators/"
+    pushd "$rootdir/emulators/jzintv-1.0-beta4/src/"
+    mkdir "$rootdir/emulators/jzintv-1.0-beta4/bin"
+    cat > "pi.diff" << _EOF_
+65c
+ OPT_FLAGS = -O3 -fomit-frame-pointer -fprefetch-loop-arrays -march=armv6 -mfloat-abi=hard -mfpu=vfp
+.
+_EOF_
+
+    patch -e Makefile pi.diff
+    make clean
     make
-    if [[ ! -f "$rootdir/emulatorcores/mednafen-pce-libretro/libretro.so" ]]; then
-        __ERRMSGS="$__ERRMSGS Could not successfully compile PC Engine core."
+    if [[ ! -f "$rootdir/emulators/jzintv-1.0-beta4/bin/jzintv" ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile jzintv."
+    else
+        __INFMSGS="$__INFMSGS You need to copy Intellivision BIOS files to the folder '/usr/local/share/jzintv/rom'."
+    fi      
+    popd
+    rm jzintv.zip
+}
+
+# configure Lineapple emulator
+function configure_linapple()
+{
+    if [[ ! -d $rootdir/roms/apple2 ]]; then
+        mkdir -p $rootdir/roms/apple2
+    fi
+    cat > "$rootdir/emulators/linapple-src_2a/Start.sh" << _EOF_
+#!/bin/bash
+pushd $rootdir/emulators/linapple-src_2a
+./linapple
+popd
+_EOF_
+    chmod +x "$rootdir/emulators/linapple-src_2a/Start.sh"
+    touch $rootdir/roms/apple2/Start.txt
+
+    pushd "$rootdir/emulators/linapple-src_2a"
+    sed -i -r -e "s|[^I]?Joystick 0[^I]?=[^I]?[0-9]|\tJoystick 0\t=\t1|g" linapple.conf
+    sed -i -r -e "s|[^I]?Joystick 1[^I]?=[^I]?[0-9]|\tJoystick 1\t=\t1|g" linapple.conf
+    popd
+    chgrp -R $user $rootdir
+    chown -R $user $rootdir  
+}
+
+# install Linapple emulator
+function install_linapple()
+{
+    printMsg "Installing Apple II emulator (Linapple)"
+    if [[ -d "$rootdir/emulators/apple2" ]]; then
+        rm -rf "$rootdir/emulators/apple2"
+    fi   
+    wget http://downloads.sourceforge.net/project/linapple/linapple/linapple-2a/linapple-src_2a.tar.bz2
+    tar -jxvf linapple-src_2a.tar.bz2 -C "$rootdir/emulators/"
+    pushd "$rootdir/emulators/linapple-src_2a/src"
+    make
+    popd    
+    configure_linapple
+    rm linapple-src_2a.tar.bz2
+}
+
+# install Sega Mega Drive/Mastersystem/Game Gear libretro emulator core
+function install_megadriveLibretro()
+{
+    printMsg "Installing Mega Drive/Mastersystem/Game Gear core (Libretro core)"
+    gitPullOrClone "$rootdir/emulatorcores/Genesis-Plus-GX" git://github.com/libretro/Genesis-Plus-GX.git
+    make -f Makefile.libretro 
+    if [[ ! -f `find $rootdir/emulatorcores/Genesis-Plus-GX/ -name "*libretro*.so"` ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile Genesis core."
     fi      
     popd
 }
@@ -593,7 +1093,7 @@ function install_psx()
     gitPullOrClone "$rootdir/emulatorcores/pcsx_rearmed" git://github.com/libretro/pcsx_rearmed.git
     ./configure --platform=libretro
     make
-    if [[ ! -f "$rootdir/emulatorcores/pcsx_rearmed/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/pcsx_rearmed/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile Playstation core."
     fi      
     popd
@@ -605,8 +1105,51 @@ function install_snes()
     printMsg "Installing SNES core"
     gitPullOrClone "$rootdir/emulatorcores/pocketsnes-libretro" git://github.com/ToadKing/pocketsnes-libretro.git
     make
-    if [[ ! -f "$rootdir/emulatorcores/pocketsnes-libretro/libretro.so" ]]; then
+    if [[ -z `find $rootdir/emulatorcores/pocketsnes-libretro/ -name "*libretro*.so"` ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile SNES core."
+    fi      
+    popd
+}
+
+# configure SNES emulator core settings
+function configure_snes()
+{
+    printMsg "Configuring SNES core"
+
+    # DISABLE rewind feature for SNES core due to the speed decrease
+    ensureKeyValue "rewind_enable" "false" "$rootdir/configs/snes/retroarch.cfg"
+}
+
+# install SNES9X emulator
+function install_snes9x()
+{
+    if [[ -d "$rootdir/emulators/snes9x-rpi" ]]; then
+        rm -rf "$rootdir/emulators/snes9x-rpi"
+    fi        
+    gitPullOrClone "$rootdir/emulators/snes9x-rpi" https://github.com/chep/snes9x-rpi.git
+    make
+    if [[ -z `grep "mode \"320x240\"" /etc/fb.modes` ]]; then
+        echo -e "mode \"320x240\"\ngeometry 320 240 656 512 16\ntimings 0 0 0 0 0 0 0\nrgba 5/11,6/5,5/0,0/16\nendmode" | cat - /etc/fb.modes > temp && mv temp /etc/fb.modes
+    fi
+    if [[ ! -f "$rootdir/emulators/snes9x-rpi/snes9x" ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile SNES9X."
+    fi      
+    popd
+}
+
+# install PiSNES emulator
+function install_pisnes()
+{
+    if [[ -d "$rootdir/emulators/pisnes" ]]; then
+        rm -rf "$rootdir/emulators/pisnes"
+    fi        
+    gitPullOrClone "$rootdir/emulators/pisnes" https://code.google.com/p/pisnes/
+    make
+    if [[ -z `grep "mode \"320x240\"" /etc/fb.modes` ]]; then
+        echo -e "mode \"320x240\"\ngeometry 320 240 656 512 16\ntimings 0 0 0 0 0 0 0\nrgba 5/11,6/5,5/0,0/16\nendmode" | cat - /etc/fb.modes > temp && mv temp /etc/fb.modes
+    fi
+    if [[ ! -f "$rootdir/emulators/pisnes/snes9x" ]]; then
+        __ERRMSGS="$__ERRMSGS Could not successfully compile PiSNES."
     fi      
     popd
 }
@@ -633,6 +1176,45 @@ function install_wolfenstein3d()
     rm Wolf4SDL-1.7.zip
 }
 
+function configure_rpix86()
+{
+    ln -s $rootdir/roms/x86/ $rootdir/emulators/rpix86/games 
+    cat > "$rootdir/emulators/rpix86/Start.sh" << _EOF_
+#!/bin/bash
+pushd $rootdir/emulators/rpix86
+./rpix86
+popd
+_EOF_
+    chmod +x "$rootdir/emulators/rpix86/Start.sh"
+    touch $rootdir/roms/x86/Start.txt
+    chgrp -R $user $rootdir
+    chown -R $user $rootdir    
+}
+
+# install PC emulator rpix86
+function install_rpix86()
+{
+    printMsg "Installing PC emulator rpix86"
+    
+    # install rpix86
+    wget http://rpix86.patrickaalto.com/rpix86.tar.gz
+    if [[ -d "$rootdir/emulators/rpix86" ]]; then
+        rm -rf "$rootdir/emulators/rpix86"
+    fi  
+    mkdir -p "$rootdir/emulators/rpix86"
+    tar xvfz rpix86.tar.gz -C "$rootdir/emulators/rpix86"
+    rm rpix86.tar.gz
+
+    # install 4DOS.com
+    unzip -n ./supplementary/4dos.zip -d "$rootdir/emulators/rpix86/"
+
+    # configure for use with Emulation Station
+    configure_rpix86
+
+    chgrp -R $user $rootdir
+    chown -R $user $rootdir
+}
+
 # install Z Machine emulator
 function install_zmachine()
 {
@@ -650,8 +1232,9 @@ function install_zmachine()
     __INFMSGS="$__INFMSGS The text adventures Zork 1 - 3 have been installed in the directory '$rootdir/roms/zmachine/'. You can start, e.g., Zork 1 with the command 'frotz $rootdir/roms/zmachine/zork1/DATA/ZORK1.DAT'."
 }
 
-# install ZX Spectrum emulator
-function install_zxspectrum()
+# Install ZX Spectrum emulator, this function is not used abymore due to segmentation fault errors.
+# However, it is kept here for now as a recipe.
+function install_zxspectrumFromSource()
 {
     printMsg "Installing ZX Spectrum emulator"
     if [[ -d "$rootdir/emulators/zxspectrum" ]]; then
@@ -663,7 +1246,7 @@ function install_zxspectrum()
     wget http://downloads.sourceforge.net/project/fuse-emulator/fuse/1.0.0.1a/fuse-1.0.0.1a.tar.gz
     tar xvfz libspectrum-1.0.0.tar.gz
     cd libspectrum-1.0.0
-    ./configure
+    ./configure # this yields segmentation fault errors now (20.2.2013)
     make
     make install
     echo "/usr/local/lib" >> /etc/ld.so.conf.d/libspectrum.conf
@@ -678,21 +1261,30 @@ function install_zxspectrum()
     popd
 }
 
+function install_zxspectrum()
+{
+    printMsg "Installing ZX Spectrum emulator"
+    apt-get install -y spectrum-roms fuse-emulator-utils fuse-emulator-common
+}
+
 # install BCM library to enable GPIO access by SNESDev-RPi
 function install_bcmlibrary()
 {
     printMsg "Installing BCM2835 library"
-    pushd $rootdir
-    wget http://www.open.com.au/mikem/bcm2835/bcm2835-1.3.tar.gz
-    tar -zxvf bcm2835-1.3.tar.gz
-    cd bcm2835-1.3
+    wget http://www.open.com.au/mikem/bcm2835/bcm2835-1.14.tar.gz
+    tar -zxvf bcm2835-1.14.tar.gz
+    mkdir -p "$rootdir/supplementary/"
+    if [[ -d "$rootdir/supplementary/bcm2835-1.14/" ]]; then
+        rm -rf "$rootdir/supplementary/bcm2835-1.14/"
+    fi
+    mv bcm2835-1.14 $rootdir/supplementary/
+    pushd $rootdir/supplementary/bcm2835-1.14
     ./configure
+    make clean
     make
-    sudo make install
-    cd ..
-    rm bcm2835-1.3.tar.gz
-    rm -rf bcm2835-1.3
-    popd 
+    make install
+    popd
+    rm bcm2835-1.14.tar.gz 
 }
 
 # install ScummVM
@@ -716,6 +1308,9 @@ function install_snesdev()
     make
     if [[ ! -f "$rootdir/supplementary/SNESDev-Rpi/bin/SNESDev" ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile SNESDev."  
+    else
+        service SNESDev stop
+        cp "$rootdir/supplementary/SNESDev-Rpi/bin/SNESDev" /usr/local/bin/
     fi    
     popd
 }
@@ -742,34 +1337,58 @@ function enableSNESDevAtStart()
     # This command installs the init.d script so it automatically starts on boot
     update-rc.d SNESDev defaults
     # This command starts the daemon now so no need for a reboot
-    service SNESDev start     
+    service SNESDev start
 
     if [[ ($1 -eq 1) || ($1 -eq 3) ]]; then
-        ensureKeyValue "input_player1_a" "x" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_b" "z" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_y" "a" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_x" "s" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_start" "enter" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_select" "rshift" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_l" "q" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_r" "w" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_left" "left" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_right" "right" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_up" "up" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_down" "down"   "/etc/retroarch.cfg" 
 
-        ensureKeyValue "input_player2_a" "e" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_b" "r" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_y" "y" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_x" "t" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_start" "p" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_select" "o" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_l" "u" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_r" "i" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_left" "c" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_right" "b" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_up" "f" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_down" "v"   "/etc/retroarch.cfg" 
+        REVSTRING=`cat /proc/cpuinfo |grep Revision | cut -d ':' -f 2 | tr -d ' \n' | tail -c 4`
+        case "$REVSTRING" in
+              "0002"|"0003")
+                 GPIOREV=1 
+                 ;;
+              *)
+                 GPIOREV=2
+                 ;;
+        esac
+        if [ $GPIOREV = 1 ]; then
+            ensureKeyValue "input_player1_joypad_index" "0" "$rootdir/configs/all/retroarch.cfg"
+            ensureKeyValue "input_player2_joypad_index" "1" "$rootdir/configs/all/retroarch.cfg"
+        else
+            ensureKeyValue "input_player1_joypad_index" "1" "$rootdir/configs/all/retroarch.cfg"
+            ensureKeyValue "input_player2_joypad_index" "0" "$rootdir/configs/all/retroarch.cfg"
+        fi
+
+        disableKeyValue "input_enable_hotkey_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+        disableKeyValue "input_exit_emulator_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+        disableKeyValue "input_rewind_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+        disableKeyValue "input_save_state_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+        disableKeyValue "input_load_state_btn" "5" "$rootdir/configs/all/retroarch.cfg"    
+
+        ensureKeyValue "input_player1_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_down_axis" "+1" "$rootdir/configs/all/retroarch.cfg" 
+        
+        ensureKeyValue "input_player2_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_down_axis" "+1" "$rootdir/configs/all/retroarch.cfg" 
     fi
 }
 
@@ -785,31 +1404,37 @@ function disableSNESDevAtStart()
     # This command installs the init.d script so it automatically starts on boot
     update-rc.d SNESDev remove
 
-    disableKeyValue "input_player1_a" "x" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_b" "z" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_y" "a" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_x" "s" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_start" "enter" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_select" "rshift" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_l" "q" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_r" "w" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_left" "left" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_right" "right" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_up" "up" "/etc/retroarch.cfg"
-    disableKeyValue "input_player1_down" "down"   "/etc/retroarch.cfg" 
+    disableKeyValue "input_enable_hotkey_btn" "6" "$rootdir/configs/all/retroarch.cfg" 
+    disableKeyValue "input_exit_emulator_btn" "7" "$rootdir/configs/all/retroarch.cfg" 
+    disableKeyValue "input_rewind_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_save_state_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_load_state_btn" "5" "$rootdir/configs/all/retroarch.cfg"    
 
-    disableKeyValue "input_player2_a" "e" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_b" "r" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_y" "y" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_x" "t" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_start" "p" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_select" "o" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_l" "u" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_r" "i" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_left" "c" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_right" "b" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_up" "f" "/etc/retroarch.cfg"
-    disableKeyValue "input_player2_down" "v"   "/etc/retroarch.cfg" 
+    disableKeyValue "input_player1_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player1_down_axis" "+1"   "$rootdir/configs/all/retroarch.cfg" 
+
+    disableKeyValue "input_player2_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+    disableKeyValue "input_player2_down_axis" "+1" "$rootdir/configs/all/retroarch.cfg" 
 }
 
 # Show dialogue for enabling/disabling SNESDev on boot
@@ -849,20 +1474,28 @@ function install_xboxdrv()
     # still to be continued
 }
 
+# fix for RaspBMC
+function fixForXBian()
+{
+    echo "/opt/vc/lib" > /etc/ld.so.conf.d/vc.conf    
+    ldconfig
+}
+
 # a work around here, so that EmulationStation can be executed from arbitrary locations
 function install_esscript()
 {
     cat > /usr/bin/emulationstation << _EOF_
 #!/bin/bash
 
-if [ -n "\$DISPLAY" ]; then
+es_bin="$rootdir/supplementary/EmulationStation/emulationstation"
+
+nb_lock_files=\$(find /tmp -name ".X?-lock" | wc -l)
+if [ \$nb_lock_files -ne 0 ]; then
     echo "X is running. Please shut down X in order to mitigate problems with loosing keyboard input. For example, logout from LXDE."
     exit 1
-fi 
+fi
 
-pushd "$rootdir/supplementary/EmulationStation" > /dev/null
-./emulationstation
-popd > /dev/null
+\$es_bin "\$@"
 _EOF_
     chmod +x /usr/bin/emulationstation
 }
@@ -873,10 +1506,21 @@ function install_emulationstation()
     printMsg "Installing EmulationStation as graphical front end"
     gitPullOrClone "$rootdir/supplementary/EmulationStation" git://github.com/Aloshi/EmulationStation.git
     make
-    install_esscript
+    install_esscript    
     if [[ ! -f "$rootdir/supplementary/EmulationStation/emulationstation" ]]; then
         __ERRMSGS="$__ERRMSGS Could not successfully compile Emulation Station."
     fi      
+
+    if [[ ! -f /usr/lib/libEGL.so ]]; then
+        ln -fs /opt/vc/lib/libEGL.so /usr/lib/libEGL.so
+    fi
+    if [[ ! -f /usr/lib/libEGL.so ]]; then
+        ln -fs /opt/vc/lib/libEGL.so /usr/lib/libEGL.so
+    fi
+    if [[ ! -f /usr/lib/libEGL.so ]]; then
+        ln -fs /opt/vc/lib/libEGL.so /usr/lib/libEGL.so
+    fi
+
     popd
 }
 
@@ -888,100 +1532,165 @@ function generate_esconfig()
         mkdir "$rootdir/../.emulationstation"
     fi
     cat > "$rootdir/../.emulationstation/es_systems.cfg" << _EOF_
-NAME=Atari 2600
+DESCNAME=Apple ][
+NAME=apple2
+PATH=$rootdir/roms/apple2
+EXTENSION=.txt
+COMMAND=$rootdir/emulators/linapple-src_2a/Start.sh
+
+DESCNAME=Atari 2600
+NAME=atari2600
 PATH=$rootdir/roms/atari2600
-EXTENSION=.bin .BIN
-COMMAND=retroarch -L $rootdir/emulatorcores/stella-libretro/libretro.so %ROM%
+EXTENSION=.a26 .A26 .bin .BIN .rom .ROM .zip .ZIP .gz .GZ
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/stella-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/atari2600/retroarch.cfg %ROM%"
 PLATFORMID=22
 
-NAME=Doom
+DESCNAME=Cave Story
+NAME=cavestory
+PATH=$rootdir/roms/cavestory
+EXTENSION=.txt
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/nxengine-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/cavestory/retroarch.cfg $rootdir/emulatorcores/nxengine-libretro/datafiles/Doukutsu.exe"
+
+DESCNAME=C64
+NAME=c64
+PATH=$rootdir/roms/c64
+EXTENSION=.crt .CRT .d64 .D64 .g64 .G64 .t64 .T64 .tap .TAP .x64 .X64 .zip .ZIP
+COMMAND=$rootdir/emulators/vice-2.3.dfsg/installdir/bin/x64 %ROM%
+PLATFORMID=40
+
+DESCNAME=Doom
+NAME=doom
 PATH=$rootdir/roms/doom
 EXTENSION=.WAD .wad
-COMMAND=retroarch -L $rootdir/emulatorcores/libretro-prboom/libretro.so %ROM%
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/libretro-prboom/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/doom/retroarch.cfg %ROM%"
 PLATFORMID=1
 
-NAME=eDuke32
-PATH=$rootdir/roms/eduke32
+DESCNAME=Duke Nukem 3D
+NAME=duke3d
+PATH=$rootdir/roms/duke3d
 EXTENSION=.grp .GRP
-COMMAND=eduke32 %ROM%
+COMMAND=eduke32 -g %ROM% -gamegrp %ROM%
 PLATFORMID=1
 
-NAME=Game Boy Advance
+DESCNAME=Game Boy
+NAME=gb
+PATH=$rootdir/roms/gb
+EXTENSION=.gb .GB
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/gambatte-libretro/libgambatte/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/gb/retroarch.cfg %ROM%"
+PLATFORMID=4
+
+DESCNAME=Game Boy Advance
+NAME=gba
 PATH=$rootdir/roms/gba
 EXTENSION=.gba .GBA
-COMMAND=retroarch -L $rootdir/emulatorcores/vba-next/libretro.so %ROM%
+COMMAND=/home/pi/RetroPie/supplementary/runcommand/runcommand.sh 1 "$rootdir/emulators/gpsp/raspberrypi/gpsp %ROM%"
 PLATFORMID=5
 
-NAME=Game Boy Color
+DESCNAME=Game Boy Color
+NAME=gbc
 PATH=$rootdir/roms/gbc
-EXTENSION=.gb .GB
-COMMAND=retroarch -L $rootdir/emulatorcores/gambatte-libretro/libgambatte/libretro.so %ROM%
+EXTENSION=.gbc .GBC
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/gambatte-libretro/libgambatte/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/gbc/retroarch.cfg %ROM%"
 PLATFORMID=41
 
-NAME=Sega Game Gear
+DESCNAME=Sega Game Gear
+NAME=gamegear
 PATH=$rootdir/roms/gamegear
 EXTENSION=.gg .GG
-COMMAND=retroarch -L $rootdir/emulatorcores/Genesis-Plus-GX/libretro.so %ROM%
+COMMAND=$rootdir/emulators/osmose-0.8.1+rpi20121122/osmose %ROM% -joy -tv -fs
 PLATFORMID=20
 
-NAME=MAME
+DESCNAME=Intellivision
+NAME=intellivision
+PATH=$rootdir/roms/intellivision
+EXTENSION=.int .INT .bin .BIN
+COMMAND=$rootdir/emulators/jzintv-1.0-beta4/bin/jzintv -z1 -f1 -q %ROM%
+PLATFORMID=32
+
+DESCNAME=MAME
+NAME=mame
 PATH=$rootdir/roms/mame
 EXTENSION=.zip .ZIP
-COMMAND=retroarch -L $rootdir/emulatorcores/imame4all-libretro/libretro.so %ROM%  
+COMMAND=retroarch -L `find $rootdir/emulatorcores/imame4all-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/mame/retroarch.cfg %ROM% 
 PLATFORMID=23
 
-NAME=ScummVM
+DESCNAME=FinalBurn Alpha
+NAME=fba
+PATH=$rootdir/roms/fba
+EXTENSION=.zip .ZIP
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/fba-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/fba/retroarch.cfg %ROM%"
+PLATFORMID=23
+
+DESCNAME=PC (x86)
+NAME=x86
+PATH=$rootdir/roms/x86
+EXTENSION=.txt
+COMMAND=$rootdir/emulators/rpix86/Start.sh
+PLATFORMID=1
+
+DESCNAME=ScummVM
+NAME=scummvm
 PATH=$rootdir/roms/scummvm
 EXTENSION=.exe .EXE
 COMMAND=scummvm
 PLATFORMID=20
 
-NAME=Sega Master System II
+DESCNAME=Sega Master System II
+NAME=mastersystem
 PATH=$rootdir/roms/mastersystem
 EXTENSION=.sms .SMS
-COMMAND=retroarch -L $rootdir/emulatorcores/Genesis-Plus-GX/libretro.so %ROM%
+COMMAND=$rootdir/emulators/osmose-0.8.1+rpi20121122/osmose %ROM% -joy -tv -fs
 PLATFORMID=35
 
-NAME=Sega Mega Drive / Genesis
+DESCNAME=Sega Mega Drive / Genesis
+NAME=megadrive
 PATH=$rootdir/roms/megadrive
-EXTENSION=.smd .SMD .md .MD
-COMMAND=dgen -f %ROM%
-PLATFORMID=36
+EXTENSION=.smd .SMD .md .MD .bin .BIN .zip .ZIP .gz .GZ .bz2 .BZ2
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "$rootdir/emulators/dgen-sdl/dgen -f -r $rootdir/configs/all/dgenrc %ROM%"
+PLATFORMID=18
 
-NAME=NeoGeo
+DESCNAME=NeoGeo
+NAME=neogeo
 PATH=$rootdir/roms/neogeo
 EXTENSION=.zip .ZIP
-COMMAND=$rootdir/emulators/gngeo-0.7/src/gngeo -i $rootdir/roms/neogeo -B $rootdir/emulators/gngeo-0.7/neogeo-bios %ROM%
+COMMAND=$rootdir/emulators/gngeo-0.7/installdir/bin/gngeo -i $rootdir/roms/neogeo -B $rootdir/emulators/gngeo-0.7/neogeo-bios %ROM%
 PLATFORMID=24
 
-NAME=Nintendo Entertainment System
+DESCNAME=Nintendo Entertainment System
+NAME=nes
 PATH=$rootdir/roms/nes
 EXTENSION=.nes .NES
-COMMAND=retroarch -L $rootdir/emulatorcores/fceu-next/libretro.so %ROM%
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/fceu-next/fceumm-code/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/nes/retroarch.cfg %ROM%"
 PLATFORMID=7
 
-NAME=PC Engine/TurboGrafx 16
+DESCNAME=PC Engine/TurboGrafx 16
+NAME=pcengine
 PATH=$rootdir/roms/pcengine
 EXTENSION=.pce
-COMMAND=retroarch -L $rootdir/emulatorcores/mednafen-pce-libretro/libretro.so %ROM%
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/mednafen-pce-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/pcengine/retroarch.cfg %ROM%"
 PLATFORMID=34
 
-NAME=Sony Playstation 1
+DESCNAME=Sony Playstation 1
+NAME=psx
 PATH=$rootdir/roms/psx
-EXTENSION=.img .IMG .7z
-COMMAND=retroarch -L $rootdir/emulatorcores/pcsx_rearmed/libretro.so %ROM%
+EXTENSION=.img .IMG .7z .7Z .pbp .PBP .bin .BIN
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/pcsx_rearmed/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/psx/retroarch.cfg %ROM%"
 PLATFORMID=10
 
-NAME=Super Nintendo
+DESCNAME=Super Nintendo
+NAME=snes
 PATH=$rootdir/roms/snes
 EXTENSION=.smc .sfc .fig .swc .SMC .SFC .FIG .SWC
-COMMAND=retroarch -L $rootdir/emulatorcores/pocketsnes-libretro/libretro.so %ROM%
+COMMAND=$rootdir/supplementary/runcommand/runcommand.sh 1 "retroarch -L `find $rootdir/emulatorcores/pocketsnes-libretro/ -name "*libretro*.so"` --config $rootdir/configs/all/retroarch.cfg --appendconfig $rootdir/configs/snes/retroarch.cfg %ROM%"
+# alternatively: COMMAND=$rootdir/emulators/snes9x-rpi/snes9x %ROM%
+# alternatively: COMMAND=$rootdir/emulators/pisnes/snes9x %ROM%
 PLATFORMID=6
 
-NAME=ZX Spectrum
+DESCNAME=ZX Spectrum
+NAME=zxspectrum
 PATH=$rootdir/roms/zxspectrum
 EXTENSION=.z80 .Z80
-COMMAND=fuse
+COMMAND=xinit fuse
 
 _EOF_
 
@@ -990,23 +1699,28 @@ chgrp -R $user "$rootdir/../.emulationstation"
 
 }
 
+# sorts ROMs alphabetically. Users reported issues with that, so that it is disbaled in the menu for now. Needs to be debugged
 function sortromsalphabet()
 {
     clear
-    pathlist[0]="$rootdir/roms/amiga"
-    pathlist[1]="$rootdir/roms/atari2600"
-    pathlist[2]="$rootdir/roms/gamegear"
-    pathlist[3]="$rootdir/roms/gba"
-    pathlist[4]="$rootdir/roms/gbc"
-    pathlist[5]="$rootdir/roms/mame"
-    pathlist[6]="$rootdir/roms/mastersystem"
-    pathlist[7]="$rootdir/roms/megadrive"
-    pathlist[8]="$rootdir/roms/neogeo"
-    pathlist[9]="$rootdir/roms/nes"
-    pathlist[10]="$rootdir/roms/snes"  
-    pathlist[11]="$rootdir/roms/pcengine"      
-    pathlist[12]="$rootdir/roms/psx"  
-    pathlist[13]="$rootdir/roms/zxspectrum"  
+    pathlist=()
+    pathlist+=("$rootdir/roms/amiga")
+    pathlist+=("$rootdir/roms/atari2600")
+    pathlist+=("$rootdir/roms/fba")
+    pathlist+=("$rootdir/roms/gamegear")
+    pathlist+=("$rootdir/roms/gb")
+    pathlist+=("$rootdir/roms/gba")
+    pathlist+=("$rootdir/roms/gbc")
+    pathlist+=("$rootdir/roms/intellivision")
+    pathlist+=("$rootdir/roms/mame")
+    pathlist+=("$rootdir/roms/mastersystem")
+    pathlist+=("$rootdir/roms/megadrive")
+    pathlist+=("$rootdir/roms/neogeo")
+    pathlist+=("$rootdir/roms/nes")
+    pathlist+=("$rootdir/roms/snes")
+    pathlist+=("$rootdir/roms/pcengine")
+    pathlist+=("$rootdir/roms/psx")
+    pathlist+=("$rootdir/roms/zxspectrum")
     printMsg "Sorting roms alphabetically"
     for elem in "${pathlist[@]}"
     do
@@ -1024,6 +1738,9 @@ function sortromsalphabet()
             if [[ -f "$elem/g/gamelist.xml" ]]; then
                 mv "$elem/g/gamelist.xml" "$elem/gamelist.xml"
             fi
+            if [[ -f "$elem/t/theme.xml" ]]; then
+                mv "$elem/t/theme.xml" "$elem/theme.xml"
+            fi
             if [[ ! -d "$elem/#" ]]; then
                 mkdir "$elem/#"
             fi
@@ -1039,8 +1756,8 @@ function sortromsalphabet()
 # downloads and installs pre-compiles binaries of all essential programs and libraries
 function downloadBinaries()
 {
-    wget https://github.com/downloads/petrockblog/RetroPie-Setup/$__BINARIESNAME
-    tar -jxvf $__BINARIESNAME -C $rootdir
+    wget -O binariesDownload.tar.bz2 http://blog.petrockblock.com/?wpdmdl=3
+    tar -jxvf binariesDownload.tar.bz2 -C $rootdir
     pushd $rootdir/RetroPie
     cp -r * ../
     popd
@@ -1051,25 +1768,20 @@ function downloadBinaries()
     chown $user $rootdir/roms/doom/prboom.wad
 
     rm -rf $rootdir/RetroPie
-    rm $__BINARIESNAME    
+    rm binariesDownload.tar.bz2    
 }
 
 # downloads and installs theme files for Emulation Station
 function install_esthemes()
 {
     printMsg "Installing themes for Emulation Station"
-    wget https://github.com/downloads/petrockblog/RetroPie-Setup/$__THEMESNAME
-    tar -jxvf $__THEMESNAME -C /tmp
-    if [[ ! -d $home/.emulationstation/themes ]]; then
-        mkdir $home/.emulationstation/themes
-    fi
-    cp -r /tmp/.emulationstation/themes/* "$home/.emulationstation/themes/"
-    cp -r /tmp/RetroPie/roms/* "$rootdir/roms/"
-    rm -rf /tmp/RetroPie/
-    rm -rf /tmp/.emulationstation/
-    rm $__THEMESNAME
-    chgrp -R $user .emulationstation
-    chown -R $user .emulationstation
+    wget -O themesDownload.tar.bz2 http://blog.petrockblock.com/?wpdmdl=2
+    tar -jxvf themesDownload.tar.bz2 -C $home/
+
+    chgrp -R $user $home/.emulationstation
+    chown -R $user $home/.emulationstation
+
+    rm themesDownload.tar.bz2
 }
 
 # sets the ARM frequency of the Raspberry to a specific value
@@ -1122,10 +1834,33 @@ function setSDRAMFreq()
 # configure sound settings
 function configureSoundsettings()
 {
-    printMsg "Enabling SDL audio driver for RetroArch in /etc/retroarch.cfg"    
+    printMsg "Enabling ALSA thread-based audio driver for RetroArch in $rootdir/configs/all/retroarch.cfg"    
+
     # RetroArch settings
-    ensureKeyValue "audio_driver" "sdl" "/etc/retroarch.cfg"
-    ensureKeyValue "audio_out_rate" "44100" "/etc/retroarch.cfg"
+    ensureKeyValue "audio_driver" "alsathread" "$rootdir/configs/all/retroarch.cfg"
+    ensureKeyValue "audio_out_rate" "48000" "$rootdir/configs/all/retroarch.cfg"
+
+    # ALSA settings
+    mv /etc/asound.conf /etc/asound.conf.bak
+    cat >> /etc/asound.conf << _EOF_
+pcm.!default {
+type hw
+card 0
+}
+
+ctl.!default {
+type hw
+card 0
+}
+_EOF_
+
+}
+
+# Disables safe mode (http://www.raspberrypi.org/phpBB3/viewtopic.php?p=129413) in order to make GPIO adapters work
+function setAvoidSafeMode()
+{  
+    printMsg "Setting avoid_safe_mode=1"
+    ensureKeyValueBootconfig "avoid_safe_mode" 1 "/boot/config.txt"
 }
 
 # shows help information in the console
@@ -1155,13 +1890,13 @@ function changeBootbehaviour()
     if [ "$choices" != "" ]; then
         case $choices in
             1) sed /etc/inittab -i -e "s|1:2345:respawn:/bin/login -f $user tty1 </dev/tty1 >/dev/tty1 2>&1|1:2345:respawn:/sbin/getty --noclear 38400 tty1|g"
-               sed /etc/profile -i -e "s|emulationstation||g"
+               sed /etc/profile -i -e "/emulationstation/d"
                dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Enabled original boot behaviour." 22 76    
                             ;;
             2) sed /etc/inittab -i -e "s|1:2345:respawn:/sbin/getty --noclear 38400 tty1|1:2345:respawn:\/bin\/login -f $user tty1 \<\/dev\/tty1 \>\/dev\/tty1 2\>\&1|g"
-               if [ -z $(egrep -i "^emulationstation" /etc/profile) ]
+               if [ -z $(egrep -i "emulationstation$" /etc/profile) ]
                then
-                   echo "emulationstation" >> /etc/profile
+                   echo "[ -n \"\${SSH_CONNECTION}\" ] || emulationstation" >> /etc/profile
                fi
                dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Emulation Station is now starting on boot." 22 76    
                             ;;
@@ -1171,76 +1906,114 @@ function changeBootbehaviour()
     fi    
 }
 
-function installGameconGPIOModule()
+function installGPIOpadModules()
 {
-        clear
+    GAMECON_VER=0.9
+    DB9_VER=0.7
+    DOWNLOAD_LOC=http://www.niksula.hut.fi/~mhiienka/Rpi
 
-	dialog --title " gamecon_gpio_rpi installation " --clear \
-	--yesno "Gamecon_gpio_rpi requires thats most recent kernel (firmware)\
-	is installed and active. Continue with gamecon_gpio_rpi\
-	installation?" 22 76
-	case $? in
-	  0)
-	    echo "Starting installation.";;
-	  *)
-	    return 0;;
-	esac
+    clear
 
-	#remove old headers manually to avoid cleanup issues
-	if [ "`dpkg-query -W -f='${Version}' linux-headers-3.2.27+`" = "3.2.27+-1" ]; then
-	    dpkg -r gamecon-gpio-rpi-dkms
-	    dpkg -r linux-headers-3.2.27+
-	fi
+    dialog --title " GPIO gamepad drivers installation " --clear \
+    --yesno "GPIO gamepad drivers require that most recent kernel (firmware)\
+    is installed and active. Continue with installation?" 22 76
+    case $? in
+      0)
+        echo "Starting installation.";;
+      *)
+        return 0;;
+    esac
 
-        #install dkms
-        apt-get install -y dkms
+    #install dkms
+    apt-get install -y dkms
 
-	#reconfigure / install headers (takes a a while)
-	if [ "`dpkg-query -W -f='${Version}' linux-headers-3.2.27+`" = "3.2.27+-2" ]; then
-		dpkg-reconfigure linux-headers-3.2.27+
-	else
-        	wget http://www.niksula.hut.fi/~mhiienka/Rpi/linux-headers-rpi/linux-headers-`uname -r`_`uname -r`-2_armhf.deb
-	        dpkg -i linux-headers-`uname -r`_`uname -r`-2_armhf.deb
-		rm linux-headers-`uname -r`_`uname -r`-2_armhf.deb
-	fi
+    #reconfigure / install headers (takes a a while)
+    if [ "$(dpkg-query -W -f='${Version}' linux-headers-$(uname -r))" = "$(uname -r)-2" ]; then
+        dpkg-reconfigure linux-headers-`uname -r`
+    else
+        wget ${DOWNLOAD_LOC}/linux-headers-rpi/linux-headers-`uname -r`_`uname -r`-2_armhf.deb
+        dpkg -i linux-headers-`uname -r`_`uname -r`-2_armhf.deb
+        rm linux-headers-`uname -r`_`uname -r`-2_armhf.deb
+    fi
 
-	#install gamecon
-	if [ "`dpkg-query -W -f='${Version}' gamecon-gpio-rpi-dkms`" = "0.9" ]; then
-		#dpkg-reconfigure gamecon-gpio-rpi-dkms
-		echo "gamecon is the newest version"
-	else
-	        wget http://www.niksula.hut.fi/~mhiienka/Rpi/gamecon-gpio-rpi-dkms_0.9_all.deb
-	        dpkg -i gamecon-gpio-rpi-dkms_0.9_all.deb
-		rm gamecon-gpio-rpi-dkms_0.9_all.deb
-	fi
+    #install gamecon
+    if [ "`dpkg-query -W -f='${Version}' gamecon-gpio-rpi-dkms`" = ${GAMECON_VER} ]; then
+        #dpkg-reconfigure gamecon-gpio-rpi-dkms
+        echo "gamecon is the newest version"
+    else
+        wget ${DOWNLOAD_LOC}/gamecon-gpio-rpi-dkms_${GAMECON_VER}_all.deb
+        dpkg -i gamecon-gpio-rpi-dkms_${GAMECON_VER}_all.deb
+        rm gamecon-gpio-rpi-dkms_${GAMECON_VER}_all.deb
+    fi
 
-	#test if module installation is OK
-	if [[ -n $(modinfo -n gamecon_gpio_rpi | grep gamecon_gpio_rpi.ko) ]]; then
-	        dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Gamecon GPIO driver successfully installed. \
-		Use 'zless /usr/share/doc/gamecon_gpio_rpi/README.gz' to read how to use it." 22 76
-	else
-		dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Gamecon GPIO driver installation FAILED"\
-		22 76
-	fi
+    #install db9 joystick driver
+    if [ "`dpkg-query -W -f='${Version}' db9-gpio-rpi-dkms`" = ${DB9_VER} ]; then
+        echo "db9 is the newest version"
+    else
+        wget ${DOWNLOAD_LOC}/db9-gpio-rpi-dkms_${DB9_VER}_all.deb
+        dpkg -i db9-gpio-rpi-dkms_${DB9_VER}_all.deb
+        rm db9-gpio-rpi-dkms_${DB9_VER}_all.deb
+    fi
+
+    #test if gamecon installation is OK
+    if [[ -n $(modinfo -n gamecon_gpio_rpi | grep gamecon_gpio_rpi.ko) ]]; then
+            dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Gamecon GPIO driver successfully installed. \
+        Use 'zless /usr/share/doc/gamecon_gpio_rpi/README.gz' to read how to use it." 22 76
+    else
+        dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Gamecon GPIO driver installation FAILED"\
+        22 76
+    fi
+
+    #test if db9 installation is OK
+    if [[ -n $(modinfo -n db9_gpio_rpi | grep db9_gpio_rpi.ko) ]]; then
+            dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Db9 GPIO driver successfully installed. \
+        Use 'zless /usr/share/doc/db9_gpio_rpi/README.gz' to read how to use it." 22 76
+    else
+        dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Db9 GPIO driver installation FAILED"\
+        22 76
+    fi
+}
+
+# install runcommand script for switching video modes
+function install_runcommandscript()
+{
+    printMsg "Installing script for setting video mode."
+    mkdir -p "$rootdir/supplementary/runcommand/"
+    cp ./supplementary/runcommand.sh "$rootdir/supplementary/runcommand/"
+    chmod +x "$rootdir/supplementary/runcommand/runcommand.sh"
+    chown -R $user $rootdir
+    chgrp -R $user $rootdir
+}
+
+# install runcommand script for switching video modes
+function install_dispmanx()
+{
+    printMsg "Installing dispmanx."
+    #mkdir -p "$rootdir/supplementary/runcommand/"
+    git clone --depth=0 git://github.com/vanfanel/SDL12-kms-dispmanx.git
+    cd SDL12-kms-dispmanx
+    sed -i '23iCFLAGS     += -I/opt/vc/include/interface/vmcs_host/linux' Makefile
+    ./configure
+    make
+    sudo make install
 }
 
 function enableGameconSnes()
 {
-	if [ "`dpkg-query -W -f='${Status}' gamecon-gpio-rpi-dkms`" != "install ok installed" ]; then
-		dialog --msgbox "gamecon_gpio_rpi not found, install it first" 22 76
-		return 0
-	fi
+    if [ "`dpkg-query -W -f='${Status}' gamecon-gpio-rpi-dkms`" != "install ok installed" ]; then
+        dialog --msgbox "gamecon_gpio_rpi not found, install it first" 22 76
+        return 0
+    fi
 
-	REVSTRING=`cat /proc/cpuinfo |grep Revision | cut -d ':' -f 2 | tr -d ' \n' | tail -c 4`
-
-	case "$REVSTRING" in
+    REVSTRING=`cat /proc/cpuinfo |grep Revision | cut -d ':' -f 2 | tr -d ' \n' | tail -c 4`
+    case "$REVSTRING" in
           "0002"|"0003")
              GPIOREV=1 
              ;;
           *)
              GPIOREV=2
              ;;
-	esac
+    esac
 
 dialog --msgbox "\
 __________\n\
@@ -1261,81 +2034,95 @@ __________\n\
          |\n\
          |" 22 76
 
-	if [[ -n $(lsmod | grep gamecon_gpio_rpi) ]]; then
-		rmmod gamecon_gpio_rpi
-	fi
+    if [[ -n $(lsmod | grep gamecon_gpio_rpi) ]]; then
+        rmmod gamecon_gpio_rpi
+    fi
 
-	if [ $GPIOREV = 1 ]; then
-	        modprobe gamecon_gpio_rpi map=0,1,1,0
-	else
-		modprobe gamecon_gpio_rpi map=0,0,1,0,0,1
-	fi
+    if [ $GPIOREV = 1 ]; then
+        modprobe gamecon_gpio_rpi map=0,1,1,0
+    else
+        modprobe gamecon_gpio_rpi map=0,0,1,0,0,1
+    fi
 
-	dialog --title " Update /etc/retroarch.cfg " --clear \
+    dialog --title " Update $rootdir/configs/all/retroarch.cfg " --clear \
         --yesno "Would you like to update button mappings \
-	to /etc/retroarch.cfg ?" 22 76
+    to $rootdir/configs/all/retroarch.cfg ?" 22 76
 
       case $? in
        0)
-	if [ $GPIOREV = 1 ]; then
-	        ensureKeyValue "input_player1_joypad_index" "0" "/etc/retroarch.cfg"
-        	ensureKeyValue "input_player2_joypad_index" "1" "/etc/retroarch.cfg"
-	else
-		ensureKeyValue "input_player1_joypad_index" "1" "/etc/retroarch.cfg"
-		ensureKeyValue "input_player2_joypad_index" "0" "/etc/retroarch.cfg"
-	fi
+    if [ $GPIOREV = 1 ]; then
+            ensureKeyValue "input_player1_joypad_index" "0" "$rootdir/configs/all/retroarch.cfg"
+            ensureKeyValue "input_player2_joypad_index" "1" "$rootdir/configs/all/retroarch.cfg"
+    else
+        ensureKeyValue "input_player1_joypad_index" "1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_joypad_index" "0" "$rootdir/configs/all/retroarch.cfg"
+    fi
 
-        ensureKeyValue "input_player1_a_btn" "0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_b_btn" "1" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_x_btn" "2" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_y_btn" "3" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_l_btn" "4" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_r_btn" "5" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_start_btn" "7" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_select_btn" "6" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_left_axis" "-0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_up_axis" "-1" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_right_axis" "+0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player1_down_axis" "+1" "/etc/retroarch.cfg"
+        ensureKeyValue "input_player1_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player1_down_axis" "+1" "$rootdir/configs/all/retroarch.cfg"
 
-        ensureKeyValue "input_player2_a_btn" "0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_b_btn" "1" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_x_btn" "2" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_y_btn" "3" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_l_btn" "4" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_r_btn" "5" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_start_btn" "7" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_select_btn" "6" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_left_axis" "-0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_up_axis" "-1" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_right_axis" "+0" "/etc/retroarch.cfg"
-        ensureKeyValue "input_player2_down_axis" "+1" "/etc/retroarch.cfg"
-	;;
+        ensureKeyValue "input_player2_a_btn" "0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_b_btn" "1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_x_btn" "2" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_y_btn" "3" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_l_btn" "4" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_r_btn" "5" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_start_btn" "7" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_select_btn" "6" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_left_axis" "-0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_up_axis" "-1" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_right_axis" "+0" "$rootdir/configs/all/retroarch.cfg"
+        ensureKeyValue "input_player2_down_axis" "+1" "$rootdir/configs/all/retroarch.cfg"
+    ;;
        *)
         ;;
       esac
 
-	dialog --title " Enable SNES configuration permanently " --clear \
+    dialog --title " Enable SNES configuration permanently " --clear \
         --yesno "Would you like to permanently enable SNES configuration?\
         " 22 76
 
-        case $? in
-          0)
-	    if [[ -z $(cat /etc/modules | grep gamecon_gpio_rpi) ]]; then
-		if [ $GPIOREV = 1 ]; then
-                    addLineToFile "gamecon_gpio_rpi map=0,1,1,0" "/etc/modules"
-		else
-		    addLineToFile "gamecon_gpio_rpi map=0,0,1,0,0,1" "/etc/modules"
-		fi
-	    fi
-	    ;;
-          *)
-            #TODO: delete the line from /etc/modules
-            ;;
-        esac
+    case $? in
+      0)
+    if [[ -z $(cat /etc/modules | grep gamecon_gpio_rpi) ]]; then
+    if [ $GPIOREV = 1 ]; then
+                addLineToFile "gamecon_gpio_rpi map=0,1,1,0" "/etc/modules"
+    else
+        addLineToFile "gamecon_gpio_rpi map=0,0,1,0,0,1" "/etc/modules"
+    fi
+    fi
+    ;;
+      *)
+        #TODO: delete the line from /etc/modules
+        ;;
+    esac
 
-        dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox \
-	"Gamecon GPIO driver enabled with 2 SNES pads." 22 76
+    dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox \
+    "Gamecon GPIO driver enabled with 2 SNES pads." 22 76
+}
+
+function install_USBROMService()
+{
+    clear
+    printMsg "Installing USB-ROM Service"
+
+    # install usbmount package
+    apt-get install -y usbmount
+
+    # install hook in usbmount sub-directory
+    cp ./supplementary/01_retropie_copyroms /etc/usbmount/mount.d/
+    sed -i -e "s/USERTOBECHOSEN/$user/g" /etc/usbmount/mount.d/01_retropie_copyroms
+    chmod +x /etc/usbmount/mount.d/01_retropie_copyroms
 }
 
 function checkNeededPackages()
@@ -1343,7 +2130,7 @@ function checkNeededPackages()
     doexit=0
     type -P git &>/dev/null && echo "Found git command." || { echo "Did not find git. Try 'sudo apt-get install -y git' first."; doexit=1; }
     type -P dialog &>/dev/null && echo "Found dialog command." || { echo "Did not find dialog. Try 'sudo apt-get install -y dialog' first."; doexit=1; }
-    if [[ doexit -eq 1 ]]; then
+    if [[ $doexit -eq 1 ]]; then
         exit 1
     fi
 }
@@ -1395,6 +2182,14 @@ function essc_runcrc()
     chown -R $user "$rootdir/roms"
 }
 
+function essc_runpartial()
+{
+    checkESScraperExists
+    python $rootdir/supplementary/ES-scraper/scraper.py -p -w $esscrapimgw
+    chgrp -R $user "$rootdir/roms"
+    chown -R $user "$rootdir/roms"
+}
+
 function essc_setimgw()
 {
     cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --inputbox "Please enter the maximum image width in pixels." 22 76 16)
@@ -1409,7 +2204,27 @@ function essc_setimgw()
 function main_reboot()
 {
     clear
-    shutdown -r now    
+    reboot    
+}
+
+function enableVariableHDMIResolution()
+{
+    cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --menu "Choose the desired video output." 22 86 16)
+    options=(1 "Enabled variable HDMI resolution"
+             2 "Disable variable HDMI resolution")
+    choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
+    if [ "$choices" != "" ]; then
+        case $choices in
+            1) sed -i -e "s/runcommand.sh [0-9]/runcommand.sh 1/g" /home/$user/.emulationstation/es_systems.cfg
+               dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Enabled variable HDMI resolution." 22 76    
+                            ;;
+            2) sed -i -e "s/runcommand.sh [0-9]/runcommand.sh 2/g" /home/$user/.emulationstation/es_systems.cfg
+               dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Disabled variable HDMI resolution." 22 76    
+                            ;;
+        esac
+    else
+        break
+    fi        
 }
 
 # checks all kinds of essential files for existence and logs the results into the file debug.log
@@ -1423,33 +2238,33 @@ function createDebugLog()
     # existence of files
     checkFileExistence "/usr/local/bin/retroarch"
     checkFileExistence "/usr/local/bin/retroarch-zip"
-    checkFileExistence "/etc/retroarch.cfg"
-    echo -e "\nActive lines in /etc/retroarch.cfg:" >> "$rootdir/debug.log"
-    sed '/^$\|^#/d' "/etc/retroarch.cfg"  >>  "$rootdir/debug.log"
+    checkFileExistence "$rootdir/configs/all/retroarch.cfg"
+    echo -e "\nActive lines in $rootdir/configs/all/retroarch.cfg:" >> "$rootdir/debug.log"
+    sed '/^$\|^#/d' "$rootdir/configs/all/retroarch.cfg"  >>  "$rootdir/debug.log"
 
     echo -e "\nEmulation Station files:" >> "$rootdir/debug.log"
     checkFileExistence "$rootdir/supplementary/EmulationStation/emulationstation"
     checkFileExistence "$rootdir/../.emulationstation/es_systems.cfg"
     checkFileExistence "$rootdir/../.emulationstation/es_input.cfg"
-    checkFileExistence "$rootdir/supplementary/EmulationStation/LinLibertine_R.ttf"
     echo -e "\nContent of es_systems.cfg:" >> "$rootdir/debug.log"
     cat "$rootdir/../.emulationstation/es_systems.cfg" >> "$rootdir/debug.log"
     echo -e "\nContent of es_input.cfg:" >> "$rootdir/debug.log"
     cat "$rootdir/../.emulationstation/es_input.cfg" >> "$rootdir/debug.log"
 
     echo -e "\nEmulators and cores:" >> "$rootdir/debug.log"
-    checkFileExistence "$rootdir/emulatorcores/fceu-next/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/Genesis-Plus-GX/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/libretro-prboom/libretro.so"
+    checkFileExistence "`find $rootdir/emulatorcores/fceu-next/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/libretro-prboom/ -name "*libretro*.so"`"
     checkFileExistence "$rootdir/emulatorcores/libretro-prboom/prboom.wad"
-    checkFileExistence "$rootdir/emulatorcores/stella-libretro/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/gambatte-libretro/libgambatte/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/imame4all-libretro/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/pcsx_rearmed/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/mednafen-pce-libretro/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/pocketsnes-libretro/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/vba-next/libretro.so"
-    checkFileExistence "$rootdir/emulatorcores/uae4all/uae4all"
+    checkFileExistence "`find $rootdir/emulatorcores/stella-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/nxengine-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/gambatte-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/Genesis-Plus-GX/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/fba-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/pcsx_rearmed/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/mednafen-pce-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/pocketsnes-libretro/ -name "*libretro*.so"`"
+    checkFileExistence "`find $rootdir/emulatorcores/vba-next/ -name "*libretro*.so"`"
+    checkFileExistence "$rootdir/emulatorcors/uae4all/uae4all"
 
     echo -e "\nSNESDev:" >> "$rootdir/debug.log"
     checkFileExistence "$rootdir/supplementary/SNESDev-Rpi/bin/SNESDev"
@@ -1461,6 +2276,7 @@ function createDebugLog()
     find "$rootdir/roms/amiga/" -type f ! \( -iname "*.adf" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
     find "$rootdir/roms/atari2600/" -type f ! \( -iname "*.bin" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
     find "$rootdir/roms/doom/" -type f ! \( -iname "*.WAD" -or -iname "*.jpg" -or -iname "*.xml" -or -name "*.wad" \) >> "$rootdir/debug.log"
+    find "$rootdir/roms/fba/" -type f ! \( -iname "*.zip" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
     find "$rootdir/roms/gamegear/" -type f ! \( -iname "*.gg" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
     find "$rootdir/roms/gba/" -type f ! \( -iname "*.gba" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
     find "$rootdir/roms/gbc/" -type f ! \( -iname "*.gb" -or -iname "*.jpg" -or -iname "*.xml" \) >> "$rootdir/debug.log"
@@ -1506,10 +2322,10 @@ function main_binaries()
     clear
     printMsg "Binaries-based installation"
 
-    install_rpiupdate
-    run_rpiupdate
+    # install_rpiupdate, not done anymore, but rely on apt-get upgrade here
     update_apt
     upgrade_apt
+    # run_rpiupdate, not done anymore, but rely on apt-get upgrade here
     installAPTPackages
     ensure_modules
     add_to_groups
@@ -1518,35 +2334,66 @@ function main_binaries()
     downloadBinaries
     install_esscript
     generate_esconfig
+    fixForXBian
+    
     # install RetroArch
     install -m755 $rootdir/emulators/RetroArch/retroarch /usr/local/bin
     install -m644 $rootdir/emulators/RetroArch/retroarch.cfg /etc/retroarch.cfg
     install -m755 $rootdir/emulators/RetroArch/retroarch-zip /usr/local/bin
     configureRetroArch
+    configure_snes
     install_esthemes
     configureSoundsettings
+    install_scummvm
+    install_zmachine
+    install_zxspectrum
+    install_c64roms
+
     # install DGEN
     test -z "/usr/local/bin" || /bin/mkdir -p "/usr/local/bin"
-    /usr/bin/install -c $rootdir/emulators/dgen-sdl-1.30/installdir/usr/local/bin/dgen $rootdir/emulators/dgen-sdl-1.30/installdir/usr/local/bin/dgen_tobin '/usr/local/bin'
+    /usr/bin/install -c $rootdir/emulators/dgen-sdl/installdir/usr/local/bin/dgen $rootdir/emulators/dgen-sdl/installdir/usr/local/bin/dgen_tobin '/usr/local/bin'
     test -z "/usr/local/share/man/man1" || /bin/mkdir -p "/usr/local/share/man/man1"
-    /usr/bin/install -c -m 644 $rootdir/emulators/dgen-sdl-1.30/installdir/usr/local/share/man/man1/dgen.1 $rootdir/emulators/dgen-sdl-1.30/installdir/usr/local/share/man/man1/dgen_tobin.1 '/usr/local/share/man/man1'
+    /usr/bin/install -c -m 644 $rootdir/emulators/dgen-sdl/installdir/usr/local/share/man/man1/dgen.1 $rootdir/emulators/dgen-sdl/installdir/usr/local/share/man/man1/dgen_tobin.1 '/usr/local/share/man/man1'
     test -z "/usr/local/share/man/man5" || /bin/mkdir -p "/usr/local/share/man/man5"
-    /usr/bin/install -c -m 644 $rootdir/emulators/dgen-sdl-1.30/installdir/usr/local/share/man/man5/dgenrc.5 '/usr/local/share/man/man5'
+    /usr/bin/install -c -m 644 $rootdir/emulators/dgen-sdl/installdir/usr/local/share/man/man5/dgenrc.5 '/usr/local/share/man/man5'
     configureDGEN
+    configure_advmame
+    configure_cavestory
+    configure_linapple
+    install_eduke32
+    configure_rpix86
 
     chgrp -R $user $rootdir
     chown -R $user $rootdir
+
+    setAvoidSafeMode
+    install_runcommandscript
 
     createDebugLog
 
     __INFMSGS="$__INFMSGS The Amiga emulator can be started from command line with '$rootdir/emulators/uae4all/uae4all'. Note that you must manually copy a Kickstart rom with the name 'kick.rom' to the directory $rootdir/emulators/uae4all/."
     __INFMSGS="$__INFMSGS You need to copy NeoGeo BIOS files to the folder '$rootdir/emulators/gngeo-0.7/neogeo-bios/'."
+    __INFMSGS="$__INFMSGS You need to copy Intellivision BIOS files to the folder '/usr/local/share/jzintv/rom'."
 
     if [[ ! -z $__INFMSGS ]]; then
         dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "$__INFMSGS" 20 60    
     fi
 
     dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --msgbox "Finished tasks.\nStart the front end with 'emulationstation'. You now have to copy roms to the roms folders. Have fun!" 22 76    
+}
+
+function main_updatescript()
+{
+  scriptdir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+  pushd $scriptdir
+  if [[ ! -d .git ]]; then
+    dialog --backtitle "PetRockBlock.com - RetroPie Setup." --msgbox "Cannot find direcotry '.git'. Please clone the RetroPie Setup script via 'git clone git://github.com/petrockblog/RetroPie-Setup.git'" 20 60    
+    popd
+    return
+  fi
+  git pull
+  popd
+  dialog --backtitle "PetRockBlock.com - ORetroPie Setup." --msgbox "Fetched the latest version of the RetroPie Setup script. You need to restart the script." 20 60    
 }
 
 ##################
@@ -1558,10 +2405,11 @@ function scraperMenu()
     while true; do
         cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --menu "Choose task." 22 76 16)
         options=(1 "(Re-)scape of the ROMs directory" 
-                 2 "Forced (re-)scrape of the ROMs directory" 
+                 2 "FORCED (re-)scrape of the ROMs directory" 
                  3 "(Re-)scrape of the ROMs directory with CRC option" 
-                 4 "(Re-)scrape of the ROMs directory in manual mode" 
-                 5 "Set maximum width of images (currently: $esscrapimgw px)" )
+                 4 "(Re-)scrape of the ROMs directory in MANUAL mode" 
+                 5 "(Re-)scrape of the ROMs directory in PARTIAL mode"
+                 6 "Set maximum width of images (currently: $esscrapimgw px)" )
         choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)    
         if [ "$choices" != "" ]; then
             clear
@@ -1570,7 +2418,8 @@ function scraperMenu()
                 2) essc_runforced ;;
                 3) essc_runcrc ;;
                 4) essc_runmanual ;;
-                5) essc_setimgw ;;
+                5) essc_runpartial ;;
+                6) essc_setimgw ;;
             esac
         else
             break
@@ -1580,42 +2429,58 @@ function scraperMenu()
 
 function main_options()
 {
-    cmd=(dialog --separate-output --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --checklist "Select options with 'space' and arrow keys. The default selection installs a complete set of packages." 22 76 16)
+    cmd=(dialog --separate-output --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --checklist "Select options with 'space' and arrow keys. The default selection installs a complete set of packages and configures basic settings. The entries marked as (C) denote the configuration steps. For an update of an installation you would deselect these to keep all your settings untouched." 22 76 16)
     options=(1 "Install latest rpi-update script" ON     # any option can be set to default to "on"
-             2 "Update firmware with rpi-update" ON \
+             2 "Update firmware with rpi-update" OFF \
              3 "Update APT repositories" ON \
              4 "Perform APT upgrade" ON \
-             5 "Add user $user to groups video, audio, and input" ON \
-             6 "Enable modules ALSA, uinput, and joydev" ON \
-             7 "Export SDL_NOMOUSE=1" ON \
-             8 "Install all needed APT packages" ON \
-             9 "Generate folder structure" ON \
-             10 "Install RetroArch" ON \
-             11 "Configure RetroArch" ON \
-             12 "Install Amiga emulator" ON \
-             13 "Install Atari 2600 core" ON \
-             14 "Install Doom core" ON \
-             15 "Install eDuke32 core" ON \
-             16 "Install Game Boy Advance core" ON \
-             17 "Install Game Boy Color core" ON \
-             18 "Install MAME core" ON \
-             19 "Install Mega Drive/Mastersystem/Game Gear (RetroArch) core" ON \
-             20 "Install DGEN (alternative Megadrive/Genesis emulator)" ON \
-             21 "Install NeoGeo emulator" ON \
-             22 "Install NES core" ON \
-             23 "Install PC Engine core" ON \
-             24 "Install Playstation core" ON \
-             25 "Install ScummVM" ON \
-             26 "Install Super NES core" ON \
-             27 "Install Wolfenstein3D engine" ON \
-             28 "Install Z Machine emulator (Frotz)" ON \
-             29 "Install ZX Spectrum emulator (Fuse)" ON \
-             30 "Install BCM library" ON \
-             31 "Install SNESDev" ON \
-             32 "Install Emulation Station" ON \
-             33 "Install Emulation Station Themes" ON \
-             34 "Generate config file for Emulation Station" ON \
-             35 "Enable SDL sound driver for RetroArch" ON )
+             5 "Apply fix for XBian (Neede to make components compile properly)" ON \
+             6 "(C) Add user $user to groups video, audio, and input" ON \
+             7 "(C) Enable modules ALSA, uinput, and joydev" ON \
+             8 "(C) Export SDL_NOMOUSE=1" ON \
+             9 "Install all needed APT packages" ON \
+             10 "(C) Generate folder structure" ON \
+             11 "Install RetroArch" ON \
+             12 "(C) Configure video, rewind, and keyboard for RetroArch" ON \
+             13 "Install Amiga emulator" ON \
+             14 "Install Apple ][ emulator (Linapple)" ON \
+             15 "Install Atari 2600 core" ON \
+             16 "Install C64 emulator (Vice)" ON \
+             17 "Install NXEngine / Cave Story" ON \
+             18 "Install Doom core" ON \
+             19 "Install eDuke32 with shareware files" ON \
+             20 "Install Game Boy Advance emulator (gpSP)" ON \
+             21 "Install Game Boy Color core" ON \
+             22 "Install IntelliVision emulator (jzintv)" ON \
+             23 "Install MAME (iMAME4All) core" ON \
+             24 "Install AdvMAME emulator" ON \
+             25 "Install FBA core" ON \
+             26 "Install Mastersystem/Game Gear/Megadrive emulator (OsmOse)" ON \
+             27 "Install DGEN (Megadrive/Genesis emulator)" ON \
+             28 "(C) Configure DGEN" ON \
+             29 "Install Megadrive/Genesis core (Genesis-Plus-GX)" ON \
+             30 "Install NeoGeo emulator" ON \
+             31 "(C) Configure NeoGeo" ON \
+             32 "Install NES core" ON \
+             33 "Install PC emulator (RPix86)" ON \
+             34 "Install Playstation core" ON \
+             35 "Install ScummVM" ON \
+             36 "Install Super NES core" ON \
+             37 "Install SNES9X emulator" ON \
+             38 "Install PiSNES emulator" ON \
+             39 "(C) Configure Super NES core" ON \
+             40 "Install Wolfenstein3D engine" ON \
+             41 "Install Z Machine emulator (Frotz)" ON \
+             42 "Install ZX Spectrum emulator (Fuse)" ON \
+             43 "Install BCM library" ON \
+             44 "Install SNESDev" ON \
+             45 "Install Emulation Station" ON \
+             46 "Install Emulation Station Themes" ON \
+             47 "(C) Generate config file for Emulation Station" ON \
+             48 "(C) Configure sound settings for RetroArch" ON \
+             49 "(C) Set avoid_safe_mode=1 (for GPIO adapter)" ON \
+             50 "Install runcommand script" ON ) \
+             51 "Install dispmanx (for DGen)" ON ) \
     choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
     clear
     __ERRMSGS=""
@@ -1628,37 +2493,53 @@ function main_options()
                 2) run_rpiupdate ;;
                 3) update_apt ;;
                 4) upgrade_apt ;;
-                5) add_to_groups ;;
-                6) ensure_modules ;;
-                7) exportSDLNOMOUSE ;;
-                8) installAPTPackages ;;
-                9) prepareFolders ;;
-                10) install_retroarch ;;
-                11) configureRetroArch ;;
-                12) install_amiga ;;
-                13) install_atari2600 ;;
-                14) install_doom ;;
-                15) install_eduke32 ;;
-                16) install_gba ;;
-                17) install_gbc ;;
-                18) install_mame ;;
-                19) install_megadrive ;;
-                20) install_dgen ;;
-                21) install_neogeo ;;
-                22) install_nes ;;
-                23) install_mednafen_pce ;;
-                24) install_psx ;;
-                25) install_scummvm ;;
-                26) install_snes ;;
-                27) install_wolfenstein3d ;;
-                28) install_zmachine ;;
-                29) install_zxspectrum ;;
-                30) install_bcmlibrary ;;
-                31) install_snesdev ;;
-                32) install_emulationstation ;;
-                33) install_esthemes ;;
-                34) generate_esconfig ;;
-                35) configureSoundsettings ;;
+                5) fixForXBian ;;
+                6) add_to_groups ;;
+                7) ensure_modules ;;
+                8) exportSDLNOMOUSE ;;
+                9) installAPTPackages ;;
+                10) prepareFolders ;;
+                11) install_retroarch ;;
+                12) configureRetroArch ;;
+                13) install_amiga ;;
+                14) install_linapple ;;
+                15) install_atari2600 ;;
+                16) install_viceC64 ;;
+                17) install_cavestory ;;
+                18) install_doom ;;
+                19) install_eduke32 ;;
+                20) install_gba ;;
+                21) install_gbc ;;
+                22) install_intellivision ;;
+                23) install_mame ;;
+                24) install_advmame ;;
+                25) install_fba ;;
+                26) install_megadrive ;;
+                27) install_dgen ;;
+                28) configureDGEN ;;
+                29) install_megadriveLibretro ;;
+                30) install_neogeo ;;
+                31) configureNeogeo ;;
+                32) install_nes ;;
+                33) install_rpix86 ;;
+                34) install_psx ;;
+                35) install_scummvm ;;
+                36) install_snes ;;
+                37) install_snes9x ;;
+                38) install_pisnes ;;
+                39) configure_snes ;;
+                40) install_wolfenstein3d ;;
+                41) install_zmachine ;;
+                42) install_zxspectrum ;;
+                43) install_bcmlibrary ;;
+                44) install_snesdev ;;
+                45) install_emulationstation ;;
+                46) install_esthemes ;;
+                47) generate_esconfig ;;
+                48) configureSoundsettings ;;
+                49) setAvoidSafeMode ;;
+                50) install_runcommandscript ;;
+                51) install_dispmanx ;;
             esac
         done
 
@@ -1685,29 +2566,37 @@ function main_setup()
         cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --menu "Choose task." 22 76 16)
         options=(1 "Re-generate config file for Emulation Station" 
                  2 "Install latest Rasperry Pi firmware" 
-                 3 "Sort roms alphabetically within folders. *Creates subfolders*" 
+                 3 "Install AdvanceMenu"
                  4 "Start Emulation Station on boot?" 
                  5 "Start SNESDev on boot?"
-                 6 "Change ARM frequency" 
-                 7 "Change SDRAM frequency"
-                 8 "Install/update multi-console gamepad driver for GPIO" 
-                 9 "Enable gamecon_gpio_rpi with SNES-pad config"
-                 10 "Run 'ES-scraper'" 
-                 11 "Generate debug log" )
+                 6 "Enable/disable RetroPie splashscreen"
+                 7 "Change ARM frequency" 
+                 8 "Change SDRAM frequency"
+                 9 "Install/update multi-console gamepad drivers for GPIO" 
+                 10 "Enable gamecon_gpio_rpi with SNES-pad config"
+                 11 "Run 'ES-scraper'" 
+                 12 "Install and configure SAMBA shares"
+                 13 "Install USB-ROM-Copy service"
+                 14 "Enable/disable variable HDMI resolution"
+                 15 "Generate debug log" )
         choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)    
         if [ "$choices" != "" ]; then
             case $choices in
                  1) generate_esconfig ;;
                  2) run_rpiupdate ;;
-                 3) sortromsalphabet ;;
+                 3) install_advancemenu ;;
                  4) changeBootbehaviour ;;
                  5) enableDisableSNESDevStart ;;
-                 6) setArmFreq ;;
-                 7) setSDRAMFreq ;;
-                 8) installGameconGPIOModule ;;
-                 9) enableGameconSnes ;;
-                 10) scraperMenu ;;
-                 11) createDebugLog ;;
+                 6) enableDisableSplashscreen ;;
+                 7) setArmFreq ;;
+                 8) setSDRAMFreq ;;
+                 9) installGPIOpadModules ;;
+                 10) enableGameconSnes ;;
+                 11) scraperMenu ;;
+                 12) configureSAMBA ;;
+                 13) install_USBROMService ;;
+                 14) enableVariableHDMIResolution ;;
+                 15) createDebugLog ;;
             esac
         else
             break
@@ -1766,18 +2655,19 @@ availFreeDiskSpace 600000
 
 while true; do
     cmd=(dialog --backtitle "PetRockBlock.com - RetroPie Setup. Installation folder: $rootdir for user $user" --menu "Choose installation either based on binaries or on sources." 22 76 16)
-    options=(1 "Binaries-based installation (faster, (probably) not the newest)"
-             2 "Source-based (custom) installation (slower, newest)"
+    options=(1 "Binaries-based installation (faster, but possibly not up-to-date)"
+             2 "Source-based installation/update (slower, but up-to-date versions)"
              3 "Setup (only if you already have run one of the installations above)"
-             4 "Perform reboot" )
+             4 "Update RetroPie Setup script"
+             5 "Perform reboot" )
     choices=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)    
     if [ "$choices" != "" ]; then
         case $choices in
-            1) main_binaries
-               break ;;
+            1) main_binaries ;;
             2) main_options ;;
             3) main_setup ;;
-            4) main_reboot ;;
+            4) main_updatescript ;;
+            5) main_reboot ;;
         esac
     else
         break
